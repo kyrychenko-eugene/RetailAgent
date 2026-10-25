@@ -207,7 +207,7 @@ def test_deadline_blocks_retry(settings, chain):
 def test_deadline_blocks_retry_raises_when_chain_ends(settings):
     h = Harness(settings, {m.model: [per_minute("30s")] for m in settings.roles["cheap"]})
     with pytest.raises(LLMUnavailableError):
-        h.call(h.ctx(seconds=40, reserve=20), role="cheap")
+        h.call(h.ctx(seconds=25, reserve=20), role="cheap")
     assert h.sleeps == []
 
 
@@ -295,3 +295,12 @@ def test_live_cheap_call(monkeypatch):
                       synthesis_reserve_s=5, budget=TurnBudget(tool_calls_limit=0), tracer=NullTracer())
     r = LLMClient(s).call_llm("cheap", [HumanMessage("Reply with the single word: pong")], ctx, node="test")
     assert "pong" in r.message.text.lower() and ctx.budget.llm_calls >= 1 and r.tokens_out > 0
+
+
+def test_cheap_role_has_no_reserve_and_timeout_has_floor(settings, chain):
+    h = Harness(settings, {m.model: [ai()] for m in settings.roles["cheap"]})
+    h.call(h.ctx(seconds=30, reserve=20), role="cheap")
+    assert h.timeouts[0][1] == 30.0
+    h2 = Harness(settings, {chain[0]: [ai()]})
+    h2.call(h2.ctx(seconds=25, reserve=20))          # 5 s left after the reserve: raised to the floor
+    assert h2.timeouts == [(chain[0], settings.llm.min_call_timeout_s)]

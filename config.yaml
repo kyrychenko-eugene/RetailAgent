@@ -50,6 +50,7 @@ llm:
   max_retries: 2              # only per-minute 429, 5xx, timeouts (DD §14.1)
   backoff_base_s: 1.0         # exponential backoff with full jitter
   backoff_max_s: 20.0
+  min_call_timeout_s: 10      # Gemini rejects request deadlines below 10 s; shorter timeouts are raised to this
   min_time_for_retry_s: 3     # do not start a retry with less remaining time than this
 
 turn:

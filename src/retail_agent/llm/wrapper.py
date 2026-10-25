@@ -176,7 +176,7 @@ class LLMClient:
         if role not in self.settings.roles:
             raise ValueError(f"Unknown LLM role '{role}'")
         cfg = self.settings.llm
-        reserve = 0.0 if is_synthesis else ctx.synthesis_reserve_s
+        reserve = 0.0 if is_synthesis or role == "cheap" else ctx.synthesis_reserve_s   # cheap calls never precede a synthesis
         chain = list(self.settings.roles[role])
         env = self._env if self._env is not None else os.environ
 
@@ -197,6 +197,7 @@ class LLMClient:
                     raise DeadlineExceededError(
                         f"No time left for an LLM call in node '{node}' "
                         f"({ctx.deadline.remaining():.1f}s remaining, reserve {reserve:.1f}s)")
+                timeout = max(timeout, cfg.min_call_timeout_s)
                 attempt += 1
                 fallback = position > 0
                 started = time.perf_counter()

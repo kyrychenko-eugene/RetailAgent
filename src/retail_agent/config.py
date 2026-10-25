@@ -36,6 +36,7 @@ class LLMSettings:
     backoff_base_s: float
     backoff_max_s: float
     min_time_for_retry_s: float
+    min_call_timeout_s: float = 0.0     # provider floor for a request deadline (Gemini: 10 s)
 
 
 @dataclass(frozen=True)
@@ -219,6 +220,7 @@ def load_settings(path: Path | None = None, env: Mapping[str, str] | None = None
         backoff_base_s=r.number("llm.backoff_base_s"),
         backoff_max_s=r.number("llm.backoff_max_s"),
         min_time_for_retry_s=r.number("llm.min_time_for_retry_s"),
+        min_call_timeout_s=r.number("llm.min_call_timeout_s"),
     )
 
     deadlines = {k: float(v) for k, v in r.mapping("turn.deadline_s").items()}

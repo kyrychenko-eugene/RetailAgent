@@ -322,16 +322,16 @@ None.
 5. Golden security checks are heuristics for the free-text `pass_if` lists (blocked columns in executed SQL, email pattern, bytes cap, security events, report ids). Not run live (golden set not run: quota).
 
 ### Known issues
-- **Earlier-stage bug (not fixed):** the per-call timeout is `min(call_timeout_s, remaining - synthesis_reserve_s)`. With `deadline_s.default: 30` and `synthesis_reserve_s: 20`, a classify/rewrite call has at most ~10 s, and after any retry less than that. Gemini rejects timeouts under 10 s (`400 Manually set deadline 6s is too short`), which surfaces as `llm_request` and a failed turn. Suggested fix (Stage 11): do not subtract the reserve for nodes that never synthesise, or raise the default deadline.
+- **Earlier-stage bug (fixed in this stage, at the user's request):** the per-call timeout was `min(call_timeout_s, remaining - synthesis_reserve_s)`, so classify/rewrite got about 10 s or less, and Gemini rejects request deadlines under 10 s (`400 deadline too short`). Now the `cheap` role takes no reserve (it never precedes a synthesis) and `llm.min_call_timeout_s: 10` (new config key) is a floor. Contracts §1.1 and §3.2 updated; test added in `tests/test_llm_wrapper.py`.
 - Free tier: 429 per minute and 503 "high demand" are frequent; they dominated the smoke failures.
 
 ### Results (free profile)
 - **Routing eval:** 38 cases, accuracy 97 %, false refusal rate 0 % (0/25), library_action 6/6, delete_scope 3/3. One misroute: R27 "Delete it." (borderline) routed to `report_library` instead of `clarify`. Weakest recall: `clarify` 50 %.
-- **Smoke:** first full run 2/7 dialogues passed (most failures were `llm_unavailable`/`llm_request` from 429/503 and the timeout bug above, not assertion mismatches). Reruns of single dialogues: SM-03, SM-04, SM-07 pass. SM-05 (with `--rpm 14`: 12/14 assertions) and SM-06 still fail on turns that hit 503/429/the timeout bug, so the deletion dialogues are **not verified live**; their logic is covered by offline tests.
+- **Smoke:** first full run 2/7 dialogues passed (most failures were `llm_unavailable`/`llm_request` from 429/503 and the timeout bug above, not assertion mismatches). Reruns of single dialogues: SM-03, SM-04, SM-07 pass. After the timeout fix, SM-05 passes (14/14, `--rpm 14`) and SM-06 passes (13/13, `--rpm 10`; one earlier attempt failed on Gemini 429/503). SM-01 and SM-02 were not rerun after the first full run.
 - `metrics.py` and `inspect_trace.py` verified on the fixture and on `logs/traces.jsonl`.
 
 ### Notes for Stage 9
 - Use the `--rpm 14` flag for live runs. Document the routing and smoke numbers above in the README with the caveat.
 
 ### Usage
-- Live LLM calls: about 146 (38 routing; about 108 smoke across the full run and reruns). Over the stated cap for smoke (≤ 40) because of reruns after rate-limit failures.
+- Live LLM calls: about 190 (38 routing; about 150 smoke across the full run and reruns). Over the stated cap for smoke (≤ 40) because of reruns after rate-limit failures.

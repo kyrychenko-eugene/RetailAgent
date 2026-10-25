@@ -41,6 +41,7 @@ class Settings:
 @dataclass(frozen=True)
 class LLMSettings: temperature: float; call_timeout_s: float; max_retries: int
                    backoff_base_s: float; backoff_max_s: float; min_time_for_retry_s: float
+                   min_call_timeout_s: float = 0.0
 @dataclass(frozen=True)
 class TurnSettings: deadline_s: dict[str, float]   # intent -> seconds, has "default"
                     synthesis_reserve_s: float; tool_budget: dict[str, int]
@@ -569,7 +570,7 @@ class LLMClient:
 Semantics, binding for Stage 3:
 - **Chain.** `settings.roles[role]`, in order. A model whose provider key is missing is skipped. A daily-quota 429 moves to the next model without retry. When every model is exhausted for daily quota → `QuotaExhaustedError(models, role)`. When the chain is exhausted for any other reason → `LLMUnavailableError`.
 - **Retries** happen per model, at most `llm.max_retries`, only for per-minute 429, 5xx and timeouts. Wait = `retry_after_seconds()` or `min(backoff_max_s, backoff_base_s * 2**attempt) * random()`. During a wait, `ctx.emit(RateLimitWait(seconds))` is sent. A retry starts only if `remaining - wait >= min_time_for_retry_s` (+ reserve when not synthesis); otherwise the wrapper moves to the next model or raises. 4xx other than 429 → `LLMRequestError`, with no retry.
-- **Timeout per attempt** = `min(llm.call_timeout_s, deadline.remaining() - (0 if is_synthesis else synthesis_reserve_s))`. If that is ≤ 0 → `DeadlineExceededError` without calling.
+- **Timeout per attempt** = `max(llm.min_call_timeout_s, min(llm.call_timeout_s, deadline.remaining() - reserve))`, where `reserve` is 0 for `is_synthesis` calls and for the `cheap` role (they never precede a synthesis) and `synthesis_reserve_s` otherwise. The floor exists because Gemini rejects request deadlines under 10 s. If that is ≤ 0 → `DeadlineExceededError` without calling.
 - **Structured output.** `schema` → `with_structured_output(schema)`. `tools` → `bind_tools(tools, tool_choice=...)`. A parse/validation failure of `schema` output counts as one retry (same model) and then raises `LLMOutputError`.
 - **Accounting.** Every attempt increments `ctx.budget.llm_calls` and the token counters, sets `fallback_used`, and writes one `llm_call` record: role, model, node, attempt, prompt, response, tokens, latency_ms, error_type, retry_count, fallback_used.
 - Tests inject `factory` returning fake chat models. No test needs a key.
