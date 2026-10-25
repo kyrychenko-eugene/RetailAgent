@@ -12,8 +12,8 @@ Stage log for `docs/implementation-plan.md`. Every stage updates this file (plan
 | 5 | Conversation graph | done | 2026-10-25 | 5 |
 | 6 | Saved reports and deletion | done | 2026-10-25 | 0 |
 | 7 | CLI | done | 2026-10-25 | 10 |
-| 8 | Observability and eval tooling | not started | | |
-| 9 | README and example run | not started | | |
+| 8 | Observability and eval tooling | done | 2026-10-25 | about 190 |
+| 9 | README and example run | done | 2026-10-25 | 43 |
 | 10 | Independent review | not started | | |
 | 11 | Fixes | not started | | |
 
@@ -335,3 +335,29 @@ None.
 
 ### Usage
 - Live LLM calls: about 190 (38 routing; about 150 smoke across the full run and reruns). Over the stated cap for smoke (≤ 40) because of reruns after rate-limit failures.
+
+---
+
+## Stage 9 — README and example run
+
+### What was done
+- **`README.md`**: purpose, short architecture (Mermaid) linking to DD, setup, profiles and free-tier limits, seeding, CLI and commands, persona editing, tests and markers, eval and observability scripts with the Stage 8 results and caveats, known limitations (DD §8.4, §8.5 and observed ones), framework choice with a placeholder for the author's LangGraph experience. The HLD link is a "to be added" line.
+- **`docs/example-run.md`**: two real piped sessions on the `free` profile (CEO; `brand_manager_2`) with `inspect_trace.py` excerpts. Covers the schema question, CEO vs brand manager on the same question, a follow-up "why", a report with action items, save then delete by entity with `confirm`, a refused PII request and an out-of-scope brand. Only the local repo path is replaced with `<repo>`, and trace excerpts omit prompt, response and SQL lines.
+
+### Deviations and questions
+1. **Verification in a fresh venv.** Created from the real interpreter path (`python3.12 -m venv` through the uv symlink fails in `ensurepip` on this machine), then `pip install -r requirements.txt`, `pytest` (362 passed), `pytest -m bq` (87 passed), `seed_executives.py`, the CLI (piped), `inspect_trace.py`, `metrics.py`, and `--help` of the three eval runners. **Not run**: `cp .env.example .env` (it would overwrite the author's `.env`), `pytest -m llm`, and the three live eval runners (quota; Stage 8 recorded their results). `gcloud auth application-default login` was not run because credentials already exist (`gcloud` is not installed on this machine).
+2. **Example run shows "delete by entity" with a brand name** (`Tommy Hilfiger`), the case covered by SM-05. The report was written from a brand-specific question for that purpose.
+3. **Example run does not show a security event for the out-of-scope brand.** The brand lookup runs inside the manager's scope, finds nothing, and the model says so; no `out_of_scope_brand` event was written. The PII turn did write a `malicious_intent` event.
+
+### Known issues
+- Over the stage cap of 25 live calls: 43 (CEO session 23, brand manager session 20), because the report turn alone used 9 and a "why" turn 6. No retries or failures occurred.
+- On `free`, the CEO's answers say "the executive's brands" in Limitations (model wording; scope was all brands).
+- `/trace` prints the absolute path of the trace file.
+
+### Notes for Stage 10
+- Follow README from a clean venv; `python3 -m venv` works on a normal Python 3.11+, but not through uv's symlinked interpreter.
+- Example session thread ids: `8b7a7e1b…` (CEO), `8131d941…` (brand_manager_2), in `logs/traces.jsonl`.
+- The seeded `data/` now holds the stage's sessions; the saved report was deleted in the run.
+
+### Usage
+- Live LLM calls: 43.
