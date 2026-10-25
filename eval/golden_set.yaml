@@ -40,7 +40,7 @@ resolvers:
         SELECT u.state, COUNT(DISTINCT oi.user_id) AS customers,
                SUM(oi.sale_price) / COUNT(DISTINCT oi.user_id) AS revenue_per_customer
         FROM order_items oi JOIN users u ON u.id = oi.user_id
-        WHERE oi.status NOT IN ('Cancelled', 'Returned') AND oi.created_at <= CURRENT_TIMESTAMP()
+        WHERE oi.status NOT IN ('Cancelled', 'Returned')
         GROUP BY u.state
       ),
       ranked AS (SELECT *, ROW_NUMBER() OVER (ORDER BY customers DESC, state) AS rn FROM by_state)
@@ -55,7 +55,7 @@ resolvers:
       WITH by_product AS (
         SELECT p.id, p.name, SUM(oi.sale_price) AS revenue
         FROM order_items oi JOIN products p ON p.id = oi.product_id
-        WHERE oi.status NOT IN ('Cancelled', 'Returned') AND oi.created_at <= CURRENT_TIMESTAMP()
+        WHERE oi.status NOT IN ('Cancelled', 'Returned')
         GROUP BY p.id, p.name
       ),
       top2 AS (SELECT *, ROW_NUMBER() OVER (ORDER BY revenue DESC, id) AS rn FROM by_product)
@@ -69,7 +69,7 @@ resolvers:
     sql: |
       SELECT p.brand AS own_brand
       FROM order_items oi JOIN products p ON p.id = oi.product_id
-      WHERE oi.status NOT IN ('Cancelled', 'Returned') AND oi.created_at <= CURRENT_TIMESTAMP()
+      WHERE oi.status NOT IN ('Cancelled', 'Returned')
       GROUP BY p.brand ORDER BY SUM(oi.sale_price) DESC, p.brand LIMIT 1
   other_brand:
     description: >
@@ -92,7 +92,7 @@ cases:
     reference_sql: |
       WITH counted AS (
         SELECT product_id, user_id, sale_price FROM order_items
-        WHERE status NOT IN ('Cancelled', 'Returned') AND created_at <= CURRENT_TIMESTAMP()
+        WHERE status NOT IN ('Cancelled', 'Returned')
       ),
       by_product AS (
         SELECT p.id AS product_id, p.name, p.brand,
@@ -126,7 +126,7 @@ cases:
              COUNT(DISTINCT oi.user_id) AS customers,
              ROUND(100 * SUM(oi.sale_price) / SUM(SUM(oi.sale_price)) OVER (), 2) AS revenue_share_pct
       FROM order_items oi JOIN users u ON u.id = oi.user_id
-      WHERE oi.status NOT IN ('Cancelled', 'Returned') AND oi.created_at <= CURRENT_TIMESTAMP()
+      WHERE oi.status NOT IN ('Cancelled', 'Returned')
       GROUP BY u.country ORDER BY revenue DESC
     key_numbers:
       - {name: top_country_revenue, row: 0, column: revenue, rel_tol: 0.01}
@@ -147,7 +147,7 @@ cases:
       WITH c AS (
         SELECT p.category, oi.sale_price, DATE(oi.created_at) AS d
         FROM order_items oi JOIN products p ON p.id = oi.product_id
-        WHERE oi.status NOT IN ('Cancelled', 'Returned') AND oi.created_at <= CURRENT_TIMESTAMP()
+        WHERE oi.status NOT IN ('Cancelled', 'Returned')
       )
       SELECT category,
         ROUND(SUM(IF(d BETWEEN DATE_TRUNC(CURRENT_DATE(), YEAR) AND CURRENT_DATE(), sale_price, 0)), 2) AS revenue_ytd,
@@ -182,7 +182,7 @@ cases:
       WITH c AS (
         SELECT u.state, oi.user_id, oi.order_id, oi.sale_price
         FROM order_items oi JOIN users u ON u.id = oi.user_id
-        WHERE oi.status NOT IN ('Cancelled', 'Returned') AND oi.created_at <= CURRENT_TIMESTAMP()
+        WHERE oi.status NOT IN ('Cancelled', 'Returned')
           AND u.state IN ('{state_x}', '{state_y}')
       )
       SELECT state,
@@ -216,7 +216,7 @@ cases:
       WITH items AS (
         SELECT p.id AS product_id, p.name, p.retail_price, p.cost, oi.status, oi.sale_price, oi.user_id, oi.created_at
         FROM order_items oi JOIN products p ON p.id = oi.product_id
-        WHERE p.id IN ({product_a_id}, {product_b_id}) AND oi.created_at <= CURRENT_TIMESTAMP()
+        WHERE p.id IN ({product_a_id}, {product_b_id})
       )
       SELECT product_id, name,
         ROUND(SUM(IF(status NOT IN ('Cancelled', 'Returned'), sale_price, 0)), 2) AS revenue,
@@ -246,7 +246,7 @@ cases:
     reference_sql: |
       WITH counted AS (
         SELECT user_id, DATE(created_at) AS d FROM order_items
-        WHERE status NOT IN ('Cancelled', 'Returned') AND created_at <= CURRENT_TIMESTAMP()
+        WHERE status NOT IN ('Cancelled', 'Returned')
       ),
       months AS (
         SELECT m FROM UNNEST(GENERATE_DATE_ARRAY(
@@ -293,7 +293,7 @@ cases:
     reference_sql: |
       WITH c AS (
         SELECT order_id, user_id, sale_price, DATE(created_at) AS d FROM order_items
-        WHERE status NOT IN ('Cancelled', 'Returned') AND created_at <= CURRENT_TIMESTAMP()
+        WHERE status NOT IN ('Cancelled', 'Returned')
       ),
       periods AS (
         SELECT 'q1_this_year' AS period, DATE_TRUNC(CURRENT_DATE(), YEAR) AS start_d,
@@ -352,7 +352,7 @@ cases:
                COUNT(DISTINCT order_id) AS frequency,
                SUM(sale_price) AS monetary
         FROM order_items
-        WHERE status NOT IN ('Cancelled', 'Returned') AND created_at <= CURRENT_TIMESTAMP()
+        WHERE status NOT IN ('Cancelled', 'Returned')
         GROUP BY user_id
       ),
       scored AS (
@@ -400,7 +400,7 @@ cases:
     reference_sql: |
       SELECT user_id, ROUND(SUM(sale_price), 2) AS total_spend, COUNT(DISTINCT order_id) AS orders
       FROM order_items
-      WHERE status NOT IN ('Cancelled', 'Returned') AND created_at <= CURRENT_TIMESTAMP()
+      WHERE status NOT IN ('Cancelled', 'Returned')
       GROUP BY user_id ORDER BY total_spend DESC, user_id LIMIT 10
     key_numbers:
       - {name: top_customer_spend, row: 0, column: total_spend, rel_tol: 0.01}
@@ -418,7 +418,7 @@ cases:
       SELECT DATE_TRUNC(DATE(created_at), MONTH) AS month, ROUND(SUM(sale_price), 2) AS revenue,
              COUNT(DISTINCT order_id) AS orders
       FROM order_items
-      WHERE status NOT IN ('Cancelled', 'Returned') AND created_at <= CURRENT_TIMESTAMP()
+      WHERE status NOT IN ('Cancelled', 'Returned')
         AND DATE(created_at) >= DATE_SUB(DATE_TRUNC(CURRENT_DATE(), MONTH), INTERVAL 12 MONTH)
       GROUP BY month ORDER BY month
     key_numbers:
@@ -436,7 +436,7 @@ cases:
     reference_sql: |
       SELECT p.id AS product_id, p.name, ROUND(SUM(oi.sale_price), 2) AS revenue_mtd, COUNT(*) AS units
       FROM order_items oi JOIN products p ON p.id = oi.product_id
-      WHERE oi.status NOT IN ('Cancelled', 'Returned') AND oi.created_at <= CURRENT_TIMESTAMP()
+      WHERE oi.status NOT IN ('Cancelled', 'Returned')
         AND DATE(oi.created_at) >= DATE_TRUNC(CURRENT_DATE(), MONTH)
       GROUP BY p.id, p.name ORDER BY revenue_mtd DESC, product_id LIMIT 10
     key_numbers:
@@ -455,7 +455,7 @@ cases:
              ROUND(SUM(sale_price) / COUNT(DISTINCT order_id), 2) AS aov,
              COUNT(DISTINCT order_id) AS orders
       FROM order_items
-      WHERE status NOT IN ('Cancelled', 'Returned') AND created_at <= CURRENT_TIMESTAMP()
+      WHERE status NOT IN ('Cancelled', 'Returned')
         AND DATE(created_at) >= DATE_SUB(DATE_TRUNC(CURRENT_DATE(), MONTH), INTERVAL 2 MONTH)
         AND DATE(created_at) < DATE_TRUNC(CURRENT_DATE(), MONTH)
       GROUP BY month ORDER BY month DESC
@@ -496,7 +496,7 @@ cases:
                   ELSE '65+' END AS age_band,
              u.gender, ROUND(SUM(oi.sale_price), 2) AS revenue, COUNT(DISTINCT oi.user_id) AS customers
       FROM order_items oi JOIN users u ON u.id = oi.user_id
-      WHERE oi.status NOT IN ('Cancelled', 'Returned') AND oi.created_at <= CURRENT_TIMESTAMP()
+      WHERE oi.status NOT IN ('Cancelled', 'Returned')
         AND DATE(oi.created_at) >= DATE_TRUNC(CURRENT_DATE(), YEAR)
       GROUP BY age_band, u.gender ORDER BY revenue DESC
     key_numbers:

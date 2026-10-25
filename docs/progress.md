@@ -37,7 +37,7 @@ Stage log for `docs/implementation-plan.md`. Every stage updates this file (plan
 - **Usage.** BigQuery: 124 query jobs, 4.3 GB billed in total (from `INFORMATION_SCHEMA.JOBS_BY_USER`; free tier). Live LLM calls: 0.
 
 ### Deviations and questions
-1. **Future-dated rows (facts §1.2; DD §8.1, §9).** `order_items` contains items up to 4 days in the future. This is handled as a glossary invariant (`created_at <= CURRENT_TIMESTAMP()`) and in all reference SQL. *Question for the author:* should the scoped `order_items` CTE apply this filter deterministically instead? It would be a DD §8.1 change: simpler for the model, but item-level `shipped_at`/`delivered_at` would still need it.
+1. **Future-dated rows (facts §1.2; DD §8.1). Resolved, at the author's decision.** `order_items` contains items up to 4 days in the future. The scoped `order_items` CTE now filters `oi.created_at <= CURRENT_TIMESTAMP()` for every scope, and this is updated in DD §8.1 (and §19), `catalog.yaml` (`filter`), `contracts.md` §2.2, the glossary and `facts.md`. The glossary and golden reference SQL no longer repeat the filter. Duration metrics keep a glossary rule for future end timestamps (`delivered_at` etc.). The golden set and the accepted security cases were re-run with the new CTE for all personas. All passed, and the only differences were small CEO deltas from items crossing "now" between the runs. Bytes were unchanged.
 2. **`AnalysisOutput.outcome` and `clarification_question` (DD §10.4).** These two fields are not in DD. Plan §5 Stage 0 item 4 requires early exit and clarification to be representable, and they do that. `outcome` is generated first.
 3. **`ClassifyOutput.overrides` and `delete_query` (DD §4.2, §9, §11.2).** Added so that session overrides and the entity to delete come out of the existing classify call, with no extra call.
 4. **Default turn deadline of 30 s** for intents other than analysis and report (DD §10.7 defines only those two): `turn.deadline_s.default`.
@@ -63,8 +63,7 @@ Stage log for `docs/implementation-plan.md`. Every stage updates this file (plan
   ~/.local/uv-dl/uv-aarch64-apple-darwin/uv venv -p 3.12 .venv
   ```
 - **gcloud** needs `CLOUDSDK_PYTHON=$(~/.local/uv-dl/uv-aarch64-apple-darwin/uv python find 3.12)`.
-- `.env` (git-ignored) should hold `GOOGLE_CLOUD_PROJECT=project-cc255935-5e46-4e75-960` and later `GOOGLE_API_KEY`. No Gemini key exists yet.
-- Add a `.gitignore` covering `.env`, `.venv/`, `data/`, `logs/`, `.DS_Store` and `__pycache__/`. The repository root currently has an untracked `.DS_Store`.
+- `.gitignore` (`.DS_Store`, `.env`, `.venv/`, `__pycache__/`, `.pytest_cache/`, `data/`, `logs/`) and `.env.example` are committed. A local `.env` exists with the project ID and a placeholder `GOOGLE_API_KEY`, which must be replaced with a real key before any `llm` run. Stage 1's `config.py` must treat the placeholder value `your-gemini-api-key` as missing.
 - Verified with sqlglot 30.24.0 and google-cloud-bigquery 3.46.2. `db-dtypes` is needed for `to_dataframe()`.
 - `bq` catalog drift test: compare the `content/catalog.yaml` columns and types with `get_table_schema()` of each base table. All catalog columns exist with matching types on 2026-10-25.
 - BigQuery bills at least 10 MiB per referenced table, and a scoped query bills ~40 MiB (facts §2). Keep `bq` tests few.

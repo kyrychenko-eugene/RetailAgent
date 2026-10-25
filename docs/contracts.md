@@ -81,7 +81,7 @@ class Table:
     columns: tuple[Column, ...]   # CTE column order
     scope_filter: str | None      # "brand" for products
     join: str | None              # "products" for order_items
-    filter: str | None            # SQL predicate text for orders/users (from catalog.yaml)
+    filter: str | None            # SQL predicate text (from catalog.yaml): order_items, orders, users
 
 @dataclass(frozen=True)
 class Catalog:
@@ -291,7 +291,8 @@ def build_scoped_sql(model_sql: str, scope: Scope, catalog: Catalog) -> ScopedQu
     """Parse with sqlglot (dialect bigquery), prepend the four CTEs generated from the catalog
     (DD §8.1, in dependency order products -> order_items -> orders -> users) to the AST's WITH
     clause, with the model's own CTEs after them. Brand filter `brand IN UNNEST(@brands)` only
-    for a brand scope. The public dataset path appears only inside the generated CTEs.
+    for a brand scope; the order_items CTE always applies the catalog `filter`
+    (`oi.created_at <= CURRENT_TIMESTAMP()`, future-dated items removed) for every scope. The public dataset path appears only inside the generated CTEs.
     Precondition: validate_sql(model_sql, ...) returned ok."""
 
 def wrap_with_limit(sql: str, max_rows: int) -> str:

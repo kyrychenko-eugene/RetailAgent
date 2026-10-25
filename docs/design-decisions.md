@@ -193,6 +193,7 @@ order_items AS (
          oi.created_at, oi.shipped_at, oi.delivered_at, oi.returned_at, oi.sale_price
   FROM `bigquery-public-data.thelook_ecommerce.order_items` oi
   JOIN products p ON p.id = oi.product_id
+  WHERE oi.created_at <= CURRENT_TIMESTAMP()     -- drop future-dated rows (facts §1.2)
 ),
 orders AS (
   SELECT order_id, user_id, created_at
@@ -209,6 +210,7 @@ users AS (
 
 - Column names are real and unchanged; only table sources are substituted. The model sees exactly these columns in its prompt.
 - For the CEO the same CTEs are used without the brand filter, so PII removal is identical for everyone.
+- **Future-dated items are removed in the CTE** (`created_at <= CURRENT_TIMESTAMP()`): the daily-regenerated dataset contains items up to a few days ahead (`docs/facts.md` §1.2). Filtering in code, rather than relying on a prompt rule, keeps every metric honest; `orders` and `users` follow automatically because they are derived from scoped items. Item-level end timestamps (`shipped_at`, `delivered_at`, `returned_at`) of past items can still lie in the future, so duration metrics keep a glossary rule for them.
 - `SELECT *` is harmless: PII columns do not exist in the CTEs.
 - Injection is done through the **sqlglot AST**, not string concatenation (handles a model query with its own `WITH`).
 - **`orders` exposes only `order_id`, `user_id`, `created_at`** (Q25). Order-level fields (`num_of_item`, order status, order shipping dates) reflect other brands' items and would leak; the glossary instructs using item-level status and dates from `order_items`. `orders` stays because the brief lists it as required.
@@ -526,6 +528,7 @@ Client's standard retries for transient errors within the turn deadline, then an
 | Golden Bucket retrieval in the prototype: 6–8 trios, embedding top-1 (Q58) | Seam only; decided design kept for the HLD (R14) | Requirement 1 is design-only in the brief; saves 2–4 h and an embedding quota; avoids eval contamination |
 | Canned cancel on any non-`confirm` input (Q39) | Pending action cleared, message processed as a normal turn (R4) | A question typed instead of `confirm` was lost |
 | Report search over title + description only (Q38) | Model selection + substring match over full text, union shown (R3) | Mentions inside findings were missed, and misses are invisible to the user |
+| Future-dated rows excluded by a glossary rule in every query (Stage 0) | Filter `created_at <= CURRENT_TIMESTAMP()` in the scoped `order_items` CTE (§8.1) | Principle 2: a rule every query must remember belongs in code |
 | Quasi-identifiers handled by a prompt rule only (Q26) | Deterministic validator rule + prompt rule (R12) | Principle 2: security is deterministic |
 
 ---

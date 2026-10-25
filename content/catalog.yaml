@@ -64,6 +64,7 @@ tables:
       Sold items, one row per item. The base fact table: revenue, units, customers, status and
       all item-level dates come from here. Contains only items of the executive's brands.
     join: products            # inner join on products.id = order_items.product_id (scoping)
+    filter: created_at <= CURRENT_TIMESTAMP()   # future-dated items removed (DD §8.1, facts §1.2)
     columns:
       - name: id
         type: INT64
@@ -86,16 +87,16 @@ tables:
         categorical: true
       - name: created_at
         type: TIMESTAMP
-        description: When the item was ordered (UTC). The sale date for all time metrics. Some rows are dated in the future; always filter created_at <= CURRENT_TIMESTAMP().
+        description: When the item was ordered (UTC). The sale date for all time metrics. Never in the future.
       - name: shipped_at
         type: TIMESTAMP
-        description: When the item shipped (UTC); NULL if not shipped yet.
+        description: When the item shipped (UTC); NULL if not shipped yet. May lie in the future for recent items.
       - name: delivered_at
         type: TIMESTAMP
-        description: When the item was delivered (UTC); NULL if not delivered.
+        description: When the item was delivered (UTC); NULL if not delivered. May lie in the future for recent items.
       - name: returned_at
         type: TIMESTAMP
-        description: When the item was returned (UTC); NULL unless status is Returned.
+        description: When the item was returned (UTC); NULL unless status is Returned. May lie in the future for recent items.
       - name: sale_price
         type: FLOAT64
         description: Price the customer paid for the item (USD). Revenue is the sum of sale_price.

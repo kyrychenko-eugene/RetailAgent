@@ -4,12 +4,12 @@ Business definitions for the analysis model (DD §9). Loaded in full into the an
 
 ## 1. Invariants (cannot be changed by the user)
 
-1. **Counted item.** An item counts towards revenue, units, customers and orders only if it was not cancelled or returned and is not dated in the future:
+1. **Counted item.** An item counts towards revenue, units, customers and orders only if it was not cancelled or returned:
    ```sql
-   oi.status NOT IN ('Cancelled', 'Returned') AND oi.created_at <= CURRENT_TIMESTAMP()
+   oi.status NOT IN ('Cancelled', 'Returned')
    ```
    `Processing`, `Shipped` and `Complete` items count as sold. Status values are case-sensitive.
-2. **Future-dated rows.** Some rows are dated after now. Every query filters `order_items.created_at <= CURRENT_TIMESTAMP()`, and duration metrics also require the end timestamp (`delivered_at`, `shipped_at`, `returned_at`) to be `<= CURRENT_TIMESTAMP()`.
+2. **Future timestamps.** `order_items` never contains items ordered in the future, but `shipped_at`, `delivered_at` and `returned_at` of recent items can lie after now. Duration metrics therefore require the end timestamp to be `<= CURRENT_TIMESTAMP()`.
 3. **Item level, not order level.** Status, dates and amounts come from `order_items`. `orders` has only `order_id`, `user_id` and `created_at`. Never infer order size or order status from `orders`.
 4. **Sale date** is `order_items.created_at`, in UTC. Use `DATE(oi.created_at)` for day-level grouping.
 5. **Customers are shown by `user_id` only.** Personal data does not exist in the schema. Demographics (age, gender, city, state, country, traffic source) are used only in aggregates, never in the same output as a customer ID.
@@ -40,7 +40,7 @@ Use counted items (§1.1) unless stated otherwise.
 - **Revenue per customer**: revenue ÷ customers.
 - **Orders per customer**: orders ÷ customers.
 - **Margin per unit**: `p.retail_price - p.cost`. **Gross profit**: `SUM(oi.sale_price - p.cost)` over counted items. **Margin %**: gross profit ÷ revenue.
-- **Return rate**: items with `status = 'Returned'` ÷ items with `status != 'Cancelled'`, both with `created_at <= CURRENT_TIMESTAMP()`. **Cancellation rate**: items with `status = 'Cancelled'` ÷ all items.
+- **Return rate**: items with `status = 'Returned'` ÷ items with `status != 'Cancelled'`. **Cancellation rate**: items with `status = 'Cancelled'` ÷ all items.
 - **Delivery time** (days): `TIMESTAMP_DIFF(oi.delivered_at, oi.created_at, HOUR) / 24` for items with `delivered_at IS NOT NULL AND delivered_at <= CURRENT_TIMESTAMP()`. **Shipping time** works the same way with `shipped_at`.
 - **Repeat customer**: a customer with 2 or more orders in the period. **Repeat purchase rate**: repeat customers ÷ customers.
 - **Growth %**: `100 * (current / previous - 1)`. If the previous value is 0 or very small, say so instead of reporting a huge percentage.
@@ -50,7 +50,7 @@ Use counted items (§1.1) unless stated otherwise.
   ```sql
   WITH counted AS (
     SELECT user_id, DATE(created_at) AS d FROM order_items
-    WHERE status NOT IN ('Cancelled', 'Returned') AND created_at <= CURRENT_TIMESTAMP()
+    WHERE status NOT IN ('Cancelled', 'Returned')
   ),
   months AS (
     SELECT m FROM UNNEST(GENERATE_DATE_ARRAY(
@@ -112,7 +112,7 @@ WITH per_customer AS (
          COUNT(DISTINCT order_id) AS frequency,
          SUM(sale_price) AS monetary
   FROM order_items
-  WHERE status NOT IN ('Cancelled', 'Returned') AND created_at <= CURRENT_TIMESTAMP()
+  WHERE status NOT IN ('Cancelled', 'Returned')
   GROUP BY user_id
 ),
 scored AS (
