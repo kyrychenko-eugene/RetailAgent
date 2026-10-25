@@ -787,7 +787,7 @@ def run_analysis(question: str, *, mode: Literal["analysis", "report_generation"
     forces one final_answer call (tool_choice="final_answer", is_synthesis=True)."""
 ```
 
-The subgraph may be a compiled LangGraph `StateGraph` (ToolNode + conditional edge) wrapped by `run_analysis`. The function signature is the contract.
+The subgraph may be a compiled LangGraph `StateGraph` (ToolNode + conditional edge) wrapped by `run_analysis`. The function signature is the contract. The Stage 4 implementation is a plain loop. `make_tools` returns three tools named `run_sql`, `get_column_values` and `final_answer`; the loop executes the first two itself, so it can count the budget. `check_output` returns a problem for every fix it made; the loop feeds problems back to the model once. `analysis/subgraph.build_prompt(...)` renders the prompt. A final answer that contains PII is replaced by a refusal and a `pii_in_answer` event is written.
 
 ### 4.9 Graph and app facade (`agent/graph.py`, `agent/nodes.py`)
 

@@ -33,10 +33,7 @@ def test_package_layout_matches_plan():
 
 
 def test_stubs_raise_not_implemented():
-    from retail_agent.analysis.tools import format_outcome_for_model
     from retail_agent.reports.search import select_reports_by_thread
-    with pytest.raises(NotImplementedError):
-        format_outcome_for_model(None)
     with pytest.raises(NotImplementedError):
         select_reports_by_thread("ceo", "t", None)
 

@@ -8,7 +8,7 @@ Stage log for `docs/implementation-plan.md`. Every stage updates this file (plan
 | 1 | Scaffold and infrastructure | done | 2026-10-25 | 0 |
 | 2 | Security core | done | 2026-10-25 | 0 |
 | 3 | LLM wrapper and resilience | done | 2026-10-25 | 1 |
-| 4 | Analysis subgraph | not started | | |
+| 4 | Analysis subgraph | done | 2026-10-25 | 6 |
 | 5 | Conversation graph | not started | | |
 | 6 | Saved reports and deletion | not started | | |
 | 7 | CLI | not started | | |
@@ -171,3 +171,37 @@ Stage log for `docs/implementation-plan.md`. Every stage updates this file (plan
 
 ### Usage
 - Live LLM calls: 1 (one `llm` test run, free profile).
+
+---
+
+## Stage 4 — Analysis subgraph
+
+### What was done
+- **`analysis/subgraph.py`**: `run_analysis` as a plain ReAct loop with the expensive model, tools `run_sql` and `get_column_values`, and `final_answer` bound as a third tool, so a normal finish costs no extra call. Every executed tool call consumes the shared budget (also several in one step); a call over budget is answered "Not run" and the loop goes to synthesis. A terminal failure (out-of-scope brand, bytes cap, unavailable, repeated PII) returns `AnalysisResult(output=None, user_message=...)` at once, so an out-of-scope brand costs one expensive call. At the synthesis reserve, or when the budget is used up, one call with `tool_choice="final_answer"` and `is_synthesis=True` forces the answer; a deterministic limitation line records the stop.
+- **`analysis/output.py`**: `check_output` (drops unknown query IDs and action items without a finding, trims `title`/`description`, turns a question-less clarification into `cannot_answer`, adds a limitation per fix) and `render_markdown`.
+- **`analysis/tools.py`**: `make_tools`, `format_outcome_for_model` (CSV-like rows, hint, error text; never the scoped SQL), `retrieve_golden_examples` seam.
+- **`agent/prompt_assembly.py`**: implemented the helpers the prompt needs (`load_prompt`, `render`, `load_persona`, `build_system_prompt`, `history_block`, `scope_description`).
+- **Tests**: `tests/test_analysis.py` (21 offline tests, scripted fake model and fake runner) and `tests/test_analysis_live.py` (`llm` + `bq`).
+
+### Deviations and questions
+1. **Plain loop instead of a compiled LangGraph `StateGraph`.** Contracts §4.8 allows it. A loop makes the budget, deadline and terminal-failure rules explicit and testable; LangGraph is used for the conversation graph in Stage 5.
+2. **`prompt_assembly.py` is a Stage 5 file.** It was a stub, and the analysis prompt cannot be built without it, so the small helpers were implemented here. `render` substitutes in one pass (substituted text is never rescanned, so `{{` in a question is safe). Stage 5 still owns the persona pinning and wiring.
+3. **A final answer with problems gets one repair round.** When `outcome == "answer"` and `check_output` finds problems (unknown query IDs, no supporting query, an action item without a finding, a report without action items), the problems go back as the `final_answer` tool result once; the second attempt is accepted and fixed deterministically. A finding may cite only queries that succeeded.
+4. **Invalid `final_answer` arguments** are fed back too; after two such attempts the forced call runs. If the forced call fails to parse or times out, a `cannot_answer` output is returned. `QuotaExhaustedError` and `LLMUnavailableError` still propagate to the turn wrapper.
+5. **Final-answer PII scan** (DD §8.3): on a hit the answer is replaced by a short refusal and `pii_in_answer` is written.
+6. **`stopped_by` for a `DEADLINE` failure** inside a query is `"deadline"`. A plain-text reply without a tool call also goes to the forced call.
+
+### Known issues
+- The model sometimes writes lower-case finding IDs (`f1`); they are accepted as long as action items match.
+- The free profile uses Flash-Lite for the analysis, so answers can be thin (for example, the monthly-revenue answer used a 13-month window).
+
+### Notes for Stage 5
+- Build the `QueryContext` once per turn and bind the tracer with `node="analysis"` or `"report_generation"`.
+- Set `ctx.budget = TurnBudget(tool_calls_limit=settings.turn.budget_for(intent))`.
+- `ProgressEvent` is sent through `ctx.emit` before each tool call and before the forced answer.
+- Store `render_markdown(output)` as the history answer; `AnalysisResult.output is None` means show `user_message`.
+
+### Usage
+- Live LLM calls: 6 (two golden questions for `brand_manager_1`, free profile, 3 calls each).
+- BigQuery: 3 queries (about 40 MiB each).
+
