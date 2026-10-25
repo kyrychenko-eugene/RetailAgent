@@ -1,0 +1,194 @@
+# Semantic layer: schema (DD §9). Single source of truth for
+#   - the scoped CTEs (security/scoped_sql.py): one CTE per table, columns in this order,
+#     selected from `source`, brand filter only on products (see `scope_filter`);
+#   - the validator column allowlist (security/validator.py);
+#   - the schema prompt for analysis and the full catalog for schema answers;
+#   - the compact catalog for classify (table names, column names, derived metrics).
+#
+# The tables and columns below are EXACTLY the columns of the DD §8.1 CTEs. Nothing else is
+# queryable. Column names are the real BigQuery names. Descriptions are hand-written (the
+# dataset ships none) and are shown to the model.
+#
+# Flags:
+#   categorical: true       -> allowed in get_column_values (DD §10.1, R10)
+#   high_cardinality: true  -> get_column_values requires `search`
+#   customer_identifier     -> identifier for the quasi-identifier rule (DD §8.2, R12)
+#   demographic             -> demographic column for the quasi-identifier rule
+#
+# `blocked_columns` lists PII column names. It is used ONLY to classify a validator rejection
+# as a PII attempt (security event). It is never sent to the model in any prompt.
+#
+# Verified against the live schema on 2026-10-25 (docs/facts.md §1); a `bq` drift test
+# (Stage 1) compares this file with BigQueryRunner.get_table_schema().
+
+version: 1
+dataset: bigquery-public-data.thelook_ecommerce
+
+tables:
+  products:
+    source: products
+    description: Product catalog. One row per product (SKU-level item for sale).
+    scope_filter: brand          # brand IN UNNEST(@brands); omitted for the CEO
+    columns:
+      - name: id
+        type: INT64
+        description: Product ID. Join key for order_items.product_id.
+      - name: category
+        type: STRING
+        description: Product category, e.g. Jeans, Intimates, Outerwear & Coats (26 values).
+        categorical: true
+      - name: name
+        type: STRING
+        description: Product name as listed (free text, may include brand, size or style codes).
+        categorical: true
+        high_cardinality: true
+      - name: brand
+        type: STRING
+        description: Brand name, exact case and punctuation (e.g. "Levi's"). Only the executive's brands are present.
+        categorical: true
+        high_cardinality: true
+      - name: department
+        type: STRING
+        description: Department, "Men" or "Women".
+        categorical: true
+      - name: cost
+        type: FLOAT64
+        description: Unit cost to the company (USD).
+      - name: retail_price
+        type: FLOAT64
+        description: List price per unit (USD). Margin per unit = retail_price - cost.
+
+  order_items:
+    source: order_items
+    description: >
+      Sold items, one row per item. The base fact table: revenue, units, customers, status and
+      all item-level dates come from here. Contains only items of the executive's brands.
+    join: products            # inner join on products.id = order_items.product_id (scoping)
+    columns:
+      - name: id
+        type: INT64
+        description: Order item ID.
+      - name: order_id
+        type: INT64
+        description: Order the item belongs to. Join key for orders.order_id.
+      - name: user_id
+        type: INT64
+        description: Customer who bought the item. Join key for users.id. Pseudonymous ID, safe to show.
+        customer_identifier: true
+      - name: product_id
+        type: INT64
+        description: Product sold. Join key for products.id.
+      - name: status
+        type: STRING
+        description: >
+          Item status, exactly one of Processing, Shipped, Complete, Cancelled, Returned.
+          Revenue excludes Cancelled and Returned.
+        categorical: true
+      - name: created_at
+        type: TIMESTAMP
+        description: When the item was ordered (UTC). The sale date for all time metrics. Some rows are dated in the future; always filter created_at <= CURRENT_TIMESTAMP().
+      - name: shipped_at
+        type: TIMESTAMP
+        description: When the item shipped (UTC); NULL if not shipped yet.
+      - name: delivered_at
+        type: TIMESTAMP
+        description: When the item was delivered (UTC); NULL if not delivered.
+      - name: returned_at
+        type: TIMESTAMP
+        description: When the item was returned (UTC); NULL unless status is Returned.
+      - name: sale_price
+        type: FLOAT64
+        description: Price the customer paid for the item (USD). Revenue is the sum of sale_price.
+
+  orders:
+    source: orders
+    description: >
+      Orders that contain at least one of the executive's items. Only the order ID, customer
+      and order time are available; use order_items for status, dates and amounts.
+    filter: order_id IN (SELECT order_id FROM order_items)
+    columns:
+      - name: order_id
+        type: INT64
+        description: Order ID.
+      - name: user_id
+        type: INT64
+        description: Customer who placed the order. Join key for users.id.
+        customer_identifier: true
+      - name: created_at
+        type: TIMESTAMP
+        description: When the order was placed (UTC).
+
+  users:
+    source: users
+    description: >
+      Customers who bought at least one of the executive's items. Demographic fields only;
+      use them in aggregates, never next to a customer ID.
+    filter: id IN (SELECT user_id FROM order_items)
+    columns:
+      - name: id
+        type: INT64
+        description: Customer ID (same as order_items.user_id). Pseudonymous ID, safe to show.
+        customer_identifier: true
+      - name: age
+        type: INT64
+        description: Customer age in years (12-70).
+        demographic: true
+      - name: gender
+        type: STRING
+        description: '"M" or "F".'
+        categorical: true
+        demographic: true
+      - name: city
+        type: STRING
+        description: City. Some rows hold the text 'null' for unknown city.
+        categorical: true
+        high_cardinality: true
+        demographic: true
+      - name: state
+        type: STRING
+        description: State, province or region (226 values).
+        categorical: true
+        high_cardinality: true
+        demographic: true
+      - name: country
+        type: STRING
+        description: Country (14 values; Brazil is spelled "Brasil").
+        categorical: true
+        demographic: true
+      - name: traffic_source
+        type: STRING
+        description: Acquisition channel, one of Search, Organic, Facebook, Email, Display.
+        categorical: true
+        demographic: true
+      - name: created_at
+        type: TIMESTAMP
+        description: When the customer account was created (UTC).
+
+# Never sent to the model. Name-only match against unresolved column references.
+blocked_columns:
+  - first_name
+  - last_name
+  - email
+  - street_address
+  - postal_code
+  - latitude
+  - longitude
+  - user_geom
+
+# Shown in the compact catalog for classify, so derivable metrics are not "unanswerable".
+derived_metrics:
+  - revenue
+  - units sold
+  - customers
+  - orders
+  - average order value (AOV)
+  - revenue per customer
+  - margin
+  - return rate
+  - cancellation rate
+  - delivery time
+  - shipping time
+  - churn and churn rate
+  - retention / repeat purchase rate
+  - growth (period over period)
+  - RFM segments

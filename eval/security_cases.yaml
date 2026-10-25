@@ -1,0 +1,597 @@
+# Deterministic security cases for pytest (offline; DD §8, §16.1 level 1).
+# Loaded by tests in Stage 2; do not copy cases into test code.
+#
+# sql_cases: input to security.validator.validate_sql(sql, scope, catalog).
+#   scope: name from `scopes` below.
+#   expect.ok: bool. expect.reason_code: ReasonCode value (docs/contracts.md §2.3), or
+#   expect.reason_any: list of acceptable codes when two rules can legitimately fire first.
+#   expect.security_event: bool (derived from the code; asserted explicitly here; omitted
+#   when reason_any spans codes with different flags).
+#   expect.user_message_contains: substring of user_message (OUT_OF_SCOPE_BRAND only).
+#   Every accepted case was also executed on BigQuery wrapped in the DD §8.1 CTEs
+#   (2026-10-25), so "accepted" means valid BigQuery SQL, not only "passes the validator".
+#   For accepted cases Stage 2 also asserts that build_scoped_sql() output references the
+#   dataset path only inside the generated CTEs.
+#
+# input_masking: security.input_masking.mask_input(text) -> (text, counts).
+#   expect_text: exact masked text; expect_counts: exact counts dict ({} = unchanged).
+#
+# result_scan: security.guards.scan_rows_for_pii(rows) / scan_text_for_pii(text).
+#   expect_kinds: sorted list of PiiHit.kind values found ([] = clean).
+#
+# Rule ids follow DD §8.2: single_select, tables, reserved_cte, columns (incl. PII),
+# brand_literal, quasi_identifier.
+
+version: 1
+
+scopes:
+  ceo: {all_brands: true, brands: []}
+  bm: {all_brands: false, brands: ["Calvin Klein", "Levi's"]}
+
+sql_cases:
+  # ---------------------------------------------------------------- single_select
+  - id: SS-01
+    rule: single_select
+    scope: bm
+    sql: DELETE FROM order_items WHERE TRUE
+    expect: {ok: false, reason_code: not_select, security_event: true}
+  - id: SS-02
+    rule: single_select
+    scope: bm
+    sql: "SELECT 1 AS a; SELECT 2 AS b"
+    expect: {ok: false, reason_code: multiple_statements, security_event: false}
+  - id: SS-03
+    rule: single_select
+    scope: ceo
+    sql: CREATE TEMP TABLE t AS SELECT * FROM order_items
+    expect: {ok: false, reason_code: not_select, security_event: true}
+  - id: SS-04
+    rule: single_select
+    scope: bm
+    sql: "DECLARE x INT64 DEFAULT 1; SELECT x"
+    expect: {ok: false, reason_any: [multiple_statements, not_select]}
+    note: security_event follows the code that fires (not asserted).
+  - id: SS-05
+    rule: single_select
+    scope: bm
+    sql: "EXPORT DATA OPTIONS(uri='gs://bucket/*.csv', format='CSV') AS SELECT * FROM order_items"
+    expect: {ok: false, reason_code: not_select, security_event: true}
+  - id: SS-06
+    rule: single_select
+    scope: ceo
+    sql: UPDATE products SET retail_price = 0 WHERE TRUE
+    expect: {ok: false, reason_code: not_select, security_event: true}
+  - id: SS-07
+    rule: single_select
+    scope: bm
+    sql: "SELECT * FROM EXTERNAL_QUERY('us.conn', 'SELECT * FROM customers')"
+    expect: {ok: false, reason_code: forbidden_function, security_event: true}
+  - id: SS-08
+    rule: single_select
+    scope: ceo
+    sql: SELECT * FROM `region-us`.INFORMATION_SCHEMA.JOBS
+    expect: {ok: false, reason_any: [information_schema, qualified_table], security_event: true}
+  - id: SS-09
+    rule: single_select
+    scope: bm
+    sql: SELECT table_name FROM INFORMATION_SCHEMA.TABLES
+    expect: {ok: false, reason_code: information_schema, security_event: true}
+  - id: SS-10
+    rule: single_select
+    scope: bm
+    sql: "SELECT status, COUNT(*) AS n FROM order_items GROUP BY status;"
+    expect: {ok: true}
+    note: Trailing semicolon is still one statement.
+  - id: SS-11
+    rule: single_select
+    scope: bm
+    sql: |
+      SELECT 'men' AS dept, COUNT(*) AS n FROM products WHERE department = 'Men'
+      UNION ALL
+      SELECT 'women', COUNT(*) FROM products WHERE department = 'Women'
+    expect: {ok: true}
+    note: UNION ALL is a single SELECT statement.
+  - id: SS-12
+    rule: single_select
+    scope: bm
+    sql: SELECT * FROM UNNEST([1, 2, 3]) AS x
+    expect: {ok: true}
+    note: UNNEST of a literal array is not a table reference.
+
+  # ---------------------------------------------------------------- tables
+  - id: TB-01
+    rule: tables
+    scope: bm
+    sql: SELECT * FROM `bigquery-public-data.thelook_ecommerce.users`
+    expect: {ok: false, reason_code: qualified_table, security_event: true}
+  - id: TB-02
+    rule: tables
+    scope: bm
+    sql: SELECT COUNT(*) AS n FROM thelook_ecommerce.order_items
+    expect: {ok: false, reason_code: qualified_table, security_event: true}
+  - id: TB-03
+    rule: tables
+    scope: ceo
+    sql: |
+      SELECT p.brand, SUM(oi.sale_price) AS revenue
+      FROM order_items oi
+      JOIN `bigquery-public-data`.thelook_ecommerce.products p ON p.id = oi.product_id
+      GROUP BY p.brand
+    expect: {ok: false, reason_code: qualified_table, security_event: true}
+    note: A qualified path inside a JOIN.
+  - id: TB-04
+    rule: tables
+    scope: bm
+    sql: SELECT COUNT(*) AS n FROM order_items WHERE user_id IN (SELECT id FROM `bigquery-public-data.thelook_ecommerce.users`)
+    expect: {ok: false, reason_code: qualified_table, security_event: true}
+    note: A qualified path inside a subquery.
+  - id: TB-05
+    rule: tables
+    scope: bm
+    sql: SELECT * FROM events LIMIT 10
+    expect: {ok: false, reason_code: unknown_table, security_event: false}
+  - id: TB-06
+    rule: tables
+    scope: bm
+    sql: SELECT COUNT(*) AS n FROM inventory_items
+    expect: {ok: false, reason_code: unknown_table, security_event: false}
+  - id: TB-07
+    rule: tables
+    scope: bm
+    sql: SELECT COUNT(*) AS n FROM USERS
+    expect: {ok: true}
+    note: Logical names are case-insensitive (verified live, facts §2).
+  - id: TB-08
+    rule: tables
+    scope: bm
+    sql: SELECT COUNT(*) AS n FROM `order_items` AS oi WHERE oi.status = 'Complete'
+    expect: {ok: true}
+    note: Backtick-quoted logical name.
+  - id: TB-09
+    rule: tables
+    scope: bm
+    sql: |
+      WITH monthly AS (
+        SELECT DATE_TRUNC(DATE(created_at), MONTH) AS m, SUM(sale_price) AS revenue
+        FROM order_items GROUP BY m
+      )
+      SELECT * FROM monthly ORDER BY m
+    expect: {ok: true}
+    note: Model-defined CTE names are allowed table references.
+
+  # ---------------------------------------------------------------- reserved_cte
+  - id: RC-01
+    rule: reserved_cte
+    scope: bm
+    sql: |
+      WITH users AS (SELECT 1 AS id, 30 AS age)
+      SELECT * FROM users
+    expect: {ok: false, reason_code: reserved_cte_name, security_event: true}
+  - id: RC-02
+    rule: reserved_cte
+    scope: bm
+    sql: |
+      WITH Products AS (SELECT 'Nike' AS brand)
+      SELECT brand FROM products
+    expect: {ok: false, reason_code: reserved_cte_name, security_event: true}
+    note: Case variation of a reserved name.
+  - id: RC-03
+    rule: reserved_cte
+    scope: bm
+    sql: |
+      WITH a AS (
+        WITH orders AS (SELECT 1 AS order_id)
+        SELECT * FROM orders
+      )
+      SELECT * FROM a
+    expect: {ok: false, reason_code: reserved_cte_name, security_event: true}
+    note: Reserved name in a nested WITH.
+  - id: RC-04
+    rule: reserved_cte
+    scope: bm
+    sql: |
+      WITH order_items AS (SELECT * FROM `bigquery-public-data.thelook_ecommerce.order_items`)
+      SELECT COUNT(*) AS n FROM order_items
+    expect: {ok: false, reason_any: [reserved_cte_name, qualified_table], security_event: true}
+  - id: RC-05
+    rule: reserved_cte
+    scope: bm
+    sql: |
+      WITH sales AS (SELECT * FROM order_items WHERE status NOT IN ('Cancelled', 'Returned')),
+           customers AS (SELECT DISTINCT user_id FROM sales)
+      SELECT COUNT(*) AS customers FROM customers
+    expect: {ok: true}
+    note: Non-reserved CTE names, one referring to another.
+
+  # ---------------------------------------------------------------- columns (PII and allowlist)
+  - id: CO-01
+    rule: columns
+    scope: bm
+    sql: SELECT email FROM users
+    expect: {ok: false, reason_code: pii_column, security_event: true}
+  - id: CO-02
+    rule: columns
+    scope: ceo
+    sql: SELECT u.first_name, u.last_name FROM users AS u
+    expect: {ok: false, reason_code: pii_column, security_event: true}
+    note: Alias-qualified PII columns; applies to the CEO too.
+  - id: CO-03
+    rule: columns
+    scope: bm
+    sql: SELECT `email` FROM users
+    expect: {ok: false, reason_code: pii_column, security_event: true}
+    note: Quoted identifier.
+  - id: CO-04
+    rule: columns
+    scope: bm
+    sql: SELECT EMAIL FROM users
+    expect: {ok: false, reason_code: pii_column, security_event: true}
+    note: Case variation.
+  - id: CO-05
+    rule: columns
+    scope: bm
+    sql: SELECT COUNT(*) AS n FROM users WHERE email LIKE '%@gmail.com'
+    expect: {ok: false, reason_code: pii_column, security_event: true}
+    note: PII used only in a filter still leaks it.
+  - id: CO-06
+    rule: columns
+    scope: bm
+    sql: SELECT ST_X(user_geom) AS lon, ST_Y(user_geom) AS lat FROM users
+    expect: {ok: false, reason_code: pii_column, security_event: true}
+  - id: CO-07
+    rule: columns
+    scope: bm
+    sql: |
+      WITH x AS (SELECT * FROM users)
+      SELECT x.street_address, x.postal_code FROM x
+    expect: {ok: false, reason_code: pii_column, security_event: true}
+    note: PII referenced through a model CTE built from SELECT *.
+  - id: CO-08
+    rule: columns
+    scope: bm
+    sql: SELECT oi.user_id FROM order_items oi JOIN users u ON u.id = oi.user_id AND u.latitude > 40
+    expect: {ok: false, reason_code: pii_column, security_event: true}
+    note: PII inside a JOIN condition.
+  - id: CO-09
+    rule: columns
+    scope: bm
+    sql: SELECT COUNT(*) AS n FROM (SELECT id FROM users WHERE LOWER(last_name) = 'smith')
+    expect: {ok: false, reason_code: pii_column, security_event: true}
+    note: PII inside a function inside a subquery.
+  - id: CO-10
+    rule: columns
+    scope: bm
+    sql: SELECT num_of_item FROM orders
+    expect: {ok: false, reason_code: unknown_column, security_event: false}
+    note: Real base column excluded from the CTE (order-level leak), not PII.
+  - id: CO-11
+    rule: columns
+    scope: bm
+    sql: SELECT o.status, COUNT(*) AS n FROM orders o GROUP BY o.status
+    expect: {ok: false, reason_code: unknown_column, security_event: false}
+    note: status exists in order_items but not in orders; columns are checked per table.
+  - id: CO-12
+    rule: columns
+    scope: bm
+    sql: SELECT sku FROM products
+    expect: {ok: false, reason_code: unknown_column, security_event: false}
+  - id: CO-13
+    rule: columns
+    scope: bm
+    sql: SELECT * FROM order_items LIMIT 5
+    expect: {ok: true}
+    note: SELECT * is harmless; the CTE has no PII.
+  - id: CO-14
+    rule: columns
+    scope: bm
+    sql: |
+      SELECT p.category AS cat, ROUND(SUM(oi.sale_price), 2) AS revenue
+      FROM order_items AS oi JOIN products AS p ON p.id = oi.product_id
+      WHERE oi.status NOT IN ('Cancelled', 'Returned')
+      GROUP BY cat ORDER BY revenue DESC
+    expect: {ok: true}
+    note: Output aliases and alias in GROUP BY / ORDER BY are not unknown columns.
+  - id: CO-15
+    rule: columns
+    scope: bm
+    sql: SELECT u.state, COUNT(*) AS n FROM users u, UNNEST(['a']) AS tag GROUP BY u.state
+    expect: {ok: true}
+    note: UNNEST alias is a valid source; no unknown columns.
+  - id: CO-16
+    rule: columns
+    scope: bm
+    sql: SELECT TO_JSON_STRING(t) AS row_json FROM (SELECT * FROM products LIMIT 3) AS t
+    expect: {ok: true}
+    note: Row-as-struct of a CTE subset is harmless; no PII column exists to serialise.
+
+  # ---------------------------------------------------------------- brand_literal (scope bm = Calvin Klein, Levi's)
+  - id: BL-01
+    rule: brand_literal
+    scope: bm
+    sql: SELECT SUM(oi.sale_price) AS revenue FROM order_items oi JOIN products p ON p.id = oi.product_id WHERE p.brand = 'Nike'
+    expect: {ok: false, reason_code: out_of_scope_brand, security_event: true, user_message_contains: "Nike"}
+  - id: BL-02
+    rule: brand_literal
+    scope: bm
+    sql: SELECT brand, COUNT(*) AS n FROM products WHERE brand IN ('Calvin Klein', 'Diesel') GROUP BY brand
+    expect: {ok: false, reason_code: out_of_scope_brand, security_event: true, user_message_contains: "Diesel"}
+    note: One out-of-scope literal in IN is enough.
+  - id: BL-03
+    rule: brand_literal
+    scope: bm
+    sql: SELECT COUNT(*) AS n FROM products WHERE brand LIKE '%Nik%'
+    expect: {ok: false, reason_code: out_of_scope_brand, security_event: true}
+    note: LIKE pattern matches no in-scope brand.
+  - id: BL-04
+    rule: brand_literal
+    scope: bm
+    sql: SELECT COUNT(*) AS n FROM products WHERE LOWER(brand) = 'diesel'
+    expect: {ok: false, reason_code: out_of_scope_brand, security_event: true}
+    note: Brand wrapped in LOWER/UPPER/TRIM is still a brand predicate; comparison is case-insensitive.
+  - id: BL-05
+    rule: brand_literal
+    scope: bm
+    sql: |
+      WITH competitor AS (SELECT id FROM products WHERE brand = 'Tommy Hilfiger')
+      SELECT COUNT(*) AS n FROM order_items WHERE product_id IN (SELECT id FROM competitor)
+    expect: {ok: false, reason_code: out_of_scope_brand, security_event: true}
+    note: Brand literal inside a model CTE.
+  - id: BL-06
+    rule: brand_literal
+    scope: bm
+    sql: SELECT COUNT(*) AS n FROM products WHERE 'Carhartt' = brand
+    expect: {ok: false, reason_code: out_of_scope_brand, security_event: true}
+    note: Literal on the left side.
+  - id: BL-07
+    rule: brand_literal
+    scope: bm
+    sql: SELECT COUNT(*) AS n FROM products WHERE brand IN UNNEST(['Calvin Klein', 'Ray-Ban'])
+    expect: {ok: false, reason_code: out_of_scope_brand, security_event: true}
+    note: IN UNNEST of a literal array.
+  - id: BL-08
+    rule: brand_literal
+    scope: bm
+    sql: SELECT SUM(oi.sale_price) AS revenue FROM order_items oi JOIN products p ON p.id = oi.product_id WHERE p.brand = 'Calvin Klein'
+    expect: {ok: true}
+  - id: BL-09
+    rule: brand_literal
+    scope: bm
+    sql: SELECT COUNT(*) AS n FROM products WHERE brand = "Levi's"
+    expect: {ok: true}
+    note: Apostrophe in a double-quoted literal.
+  - id: BL-10
+    rule: brand_literal
+    scope: bm
+    sql: SELECT COUNT(*) AS n FROM products WHERE brand IN ('Calvin Klein', 'Levi\'s')
+    expect: {ok: true}
+    note: Backslash-escaped apostrophe (BigQuery escape).
+  - id: BL-11
+    rule: brand_literal
+    scope: bm
+    sql: SELECT COUNT(*) AS n FROM products WHERE brand LIKE 'Calvin%'
+    expect: {ok: true}
+  - id: BL-12
+    rule: brand_literal
+    scope: bm
+    sql: SELECT COUNT(*) AS n FROM products WHERE brand != 'Nike' AND brand NOT IN ('Diesel')
+    expect: {ok: true}
+    note: Negative predicates do not select another brand's rows.
+  - id: BL-13
+    rule: brand_literal
+    scope: bm
+    sql: SELECT COUNT(*) AS n FROM products WHERE brand = 'calvin klein'
+    expect: {ok: true}
+    note: Case-insensitive match against scope; returns 0 rows (BigQuery = is case-sensitive), the empty-result hint handles it.
+  - id: BL-14
+    rule: brand_literal
+    scope: ceo
+    sql: SELECT SUM(oi.sale_price) AS revenue FROM order_items oi JOIN products p ON p.id = oi.product_id WHERE p.brand IN ('Nike', 'Diesel')
+    expect: {ok: true}
+    note: Brand literal check is skipped for the CEO.
+  - id: BL-15
+    rule: brand_literal
+    scope: bm
+    sql: SELECT COUNT(*) AS n FROM products WHERE name LIKE '%Nike%'
+    expect: {ok: true}
+    note: The rule applies to the brand column only, not to free-text product names.
+
+  # ---------------------------------------------------------------- quasi_identifier (R12; applies to the CEO too)
+  - id: QI-01
+    rule: quasi_identifier
+    scope: ceo
+    sql: SELECT id, age, gender FROM users
+    expect: {ok: false, reason_code: quasi_identifier, security_event: true}
+  - id: QI-02
+    rule: quasi_identifier
+    scope: bm
+    sql: |
+      SELECT oi.user_id, u.city, SUM(oi.sale_price) AS spend
+      FROM order_items oi JOIN users u ON u.id = oi.user_id
+      GROUP BY oi.user_id, u.city
+    expect: {ok: false, reason_code: quasi_identifier, security_event: true}
+  - id: QI-03
+    rule: quasi_identifier
+    scope: bm
+    sql: SELECT age, gender, state FROM users WHERE id = 48213
+    expect: {ok: false, reason_code: quasi_identifier, security_event: true}
+    note: Filter on a specific identifier value plus demographic output.
+  - id: QI-04
+    rule: quasi_identifier
+    scope: bm
+    sql: SELECT u.country, COUNT(*) AS n FROM users u WHERE u.id IN (101, 202, 303) GROUP BY u.country
+    expect: {ok: false, reason_code: quasi_identifier, security_event: true}
+    note: IN list of identifier literals with a demographic output.
+  - id: QI-05
+    rule: quasi_identifier
+    scope: bm
+    sql: |
+      WITH t AS (SELECT u.id AS uid, u.age AS a FROM users u)
+      SELECT uid, a FROM t
+    expect: {ok: false, reason_code: quasi_identifier, security_event: true}
+    note: Identifier and demographic renamed through a CTE (column lineage).
+  - id: QI-06
+    rule: quasi_identifier
+    scope: bm
+    sql: SELECT * FROM users LIMIT 10
+    expect: {ok: false, reason_code: quasi_identifier, security_event: true}
+    note: SELECT * from users outputs id together with demographics.
+  - id: QI-07
+    rule: quasi_identifier
+    scope: bm
+    sql: |
+      SELECT o.user_id, u.traffic_source
+      FROM orders o JOIN users u ON u.id = o.user_id
+    expect: {ok: false, reason_code: quasi_identifier, security_event: true}
+    note: orders.user_id is also a customer identifier.
+  - id: QI-08
+    rule: quasi_identifier
+    scope: bm
+    sql: SELECT user_id, ROUND(SUM(sale_price), 2) AS spend FROM order_items GROUP BY user_id ORDER BY spend DESC LIMIT 10
+    expect: {ok: true}
+    note: Customer IDs without demographics are allowed.
+  - id: QI-09
+    rule: quasi_identifier
+    scope: bm
+    sql: SELECT u.state, COUNT(DISTINCT u.id) AS customers FROM users u GROUP BY u.state
+    expect: {ok: true}
+    note: Identifier used only inside an aggregate.
+  - id: QI-10
+    rule: quasi_identifier
+    scope: ceo
+    sql: SELECT age, gender, COUNT(*) AS n FROM users GROUP BY age, gender
+    expect: {ok: true}
+  - id: QI-11
+    rule: quasi_identifier
+    scope: bm
+    sql: |
+      SELECT u.state, COUNT(*) AS n FROM users u
+      WHERE u.id IN (SELECT user_id FROM order_items WHERE sale_price > 500)
+      GROUP BY u.state
+    expect: {ok: true}
+    note: IN with a subquery is not a filter on specific identifier values.
+  - id: QI-12
+    rule: quasi_identifier
+    scope: bm
+    sql: SELECT * EXCEPT (id) FROM users LIMIT 10
+    expect: {ok: true}
+    note: Demographics without the identifier.
+
+input_masking:
+  # positives
+  - id: IM-01
+    text: "my email is john.doe+test@example.co.uk, send it there"
+    expect_text: "my email is <EMAIL>, send it there"
+    expect_counts: {EMAIL: 1}
+  - id: IM-02
+    text: "call me at +1 (415) 555-0132 tomorrow"
+    expect_text: "call me at <PHONE> tomorrow"
+    expect_counts: {PHONE: 1}
+  - id: IM-03
+    text: "customer phone 0441234567"
+    expect_text: "customer phone <PHONE>"
+    expect_counts: {PHONE: 1}
+  - id: IM-04
+    text: "card 4111 1111 1111 1111 was charged"
+    expect_text: "card <CARD> was charged"
+    expect_counts: {CARD: 1}
+  - id: IM-05
+    text: "use 5555-5555-5555-4444 and a@b.io"
+    expect_text: "use <CARD> and <EMAIL>"
+    expect_counts: {CARD: 1, EMAIL: 1}
+  - id: IM-06
+    text: "phone 415-555-0132 or +44 20 7946 0958"
+    expect_text: "phone <PHONE> or <PHONE>"
+    expect_counts: {PHONE: 2}
+  - id: IM-07
+    text: "amex 378282246310005"
+    expect_text: "amex <CARD>"
+    expect_counts: {CARD: 1}
+  # negatives
+  - id: IM-08
+    text: "Compare Calvin Klein and Tommy Hilfiger revenue"
+    expect_text: "Compare Calvin Klein and Tommy Hilfiger revenue"
+    expect_counts: {}
+    note: Brands that are personal names are never masked.
+  - id: IM-09
+    text: "Show orders of user 48213 and order 125396"
+    expect_text: "Show orders of user 48213 and order 125396"
+    expect_counts: {}
+  - id: IM-10
+    text: "Revenue in 2025 vs 2026, Q1 2025 and top 10"
+    expect_text: "Revenue in 2025 vs 2026, Q1 2025 and top 10"
+    expect_counts: {}
+  - id: IM-11
+    text: "Sales between 2025-01-01 and 2025-03-31"
+    expect_text: "Sales between 2025-01-01 and 2025-03-31"
+    expect_counts: {}
+  - id: IM-12
+    text: "Trend for years 2023 2024 2025 2026"
+    expect_text: "Trend for years 2023 2024 2025 2026"
+    expect_counts: {}
+    note: Luhn-valid digit sequence without a card-network prefix (facts §7).
+  - id: IM-13
+    text: "Revenue above 12345678.90 dollars or 1,234,567,890"
+    expect_text: "Revenue above 12345678.90 dollars or 1,234,567,890"
+    expect_counts: {}
+    note: Dots and commas are not phone separators.
+  - id: IM-14
+    text: "test number 1234 5678 9012 3456"
+    expect_text: "test number 1234 5678 9012 3456"
+    expect_counts: {}
+    note: Not Luhn-valid; space-only groups without '+' are not a phone.
+  - id: IM-15
+    text: "Ralph Lauren at sales@ for Levi's"
+    expect_text: "Ralph Lauren at sales@ for Levi's"
+    expect_counts: {}
+
+result_scan:
+  rows:
+    - id: RS-01
+      rows: [{note: "contact jane@example.com"}]
+      expect_kinds: [EMAIL]
+    - id: RS-02
+      rows: [{value: "+1 415-555-0132"}, {value: "(415) 555-0132"}]
+      expect_kinds: [PHONE, PHONE]
+    - id: RS-03
+      rows: [{addr: "123 Smith Mountains Apt. 665"}, {addr: "42 Baker Street, London"}]
+      expect_kinds: [ADDRESS, ADDRESS]
+    - id: RS-04
+      rows: [{user_id: 123456789, spend: 4111111111111111}]
+      expect_kinds: []
+      note: Numeric cells are not scanned.
+    - id: RS-05
+      rows:
+        - {name: "Propper Multicam BDU Shorts F526138377"}
+        - {name: "NEW 1826 DARK BLUE DENIM JEANS SIZE 14-16-18-20-22 (3677)"}
+        - {name: "RAMPAGE Moto Leggings W/ Quilt Panels [49002639827]"}
+        - {name: "Hurley Men's Change 2 Way Stretch Boardshort"}
+        - {name: "TOM FORD WILLIAM TF0207 TF207 Sunglasses 59-15-135"}
+      expect_kinds: []
+      note: Real product names (facts §7) must not trigger.
+    - id: RS-06
+      rows: [{city: "Nagoya city"}, {city: "null"}, {brand: "Joe's Jeans"}, {state: "São Paulo"}]
+      expect_kinds: []
+  text:
+    - id: RT-01
+      text: "Customer 4521 can be reached at mark@shop.com."
+      expect_kinds: [EMAIL]
+    - id: RT-02
+      text: "Revenue grew 12.4% to $1,234,567 in Q1 2026; top product F526138377."
+      expect_kinds: []
+
+# Informative, not binding: patterns that pass every case above (checked in the Stage 0
+# session against these cases and against 66k real product/brand/city/state strings with
+# zero false positives; facts §7). Stage 2 may implement differently if all cases pass.
+reference_patterns:
+  email: '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}'
+  input_card_candidate: '(?<![\d-])(?:\d{4}([ -])\d{4}\1\d{4}\1\d{4}(?:\1\d{1,3})?|\d{4}([ -])\d{6}\2\d{5}|\d{13,19})(?![\d-])'
+  input_card_rule: 13-19 digits, Luhn-valid, network prefix 4 / 51-55 / 2221-2720 / 34 / 37 / 6011 / 65 / 644-649
+  input_phone: '(?<![\w.,])(?:\+\d[\d \-()]{7,}\d|\(?\d{2,4}\)?(?:[\-]|\) ?)\d[\d\-]{5,}\d|\d{9,15})(?![\w.,]*\d)'
+  input_phone_rule: match must contain 9-15 digits
+  input_order: card, then email, then phone
+  result_phone_any_of:
+    - '\+\d{1,3}[\s-]?\(?\d{1,4}\)?(?:[\s-]?\d{2,4}){2,4}'
+    - '\(\d{3}\)\s?\d{3}[\s-]\d{4}'
+    - '\b\d{3}[-.]\d{3}[-.]\d{4}\b'
+  result_address: '(?i)\b\d{1,6}\s+(?:[A-Za-z]+\s+){1,3}(?:street|st|avenue|ave|road|rd|boulevard|blvd|lane|ln|drive|dr|way|court|ct|place|pl|park|parkway|trail|motorway|causeway|square|valley|run|landing|lodge|corner|port|falls|vista|prairie|cliffs|mountains|orchard|keys|heights|terrace|crescent|circle|highway|hwy|plaza|union|dam|flat|fall|parks|streets|squares)s?\.?(?:,|\s+(?:apt|suite|unit)\.?\s*\d+|$)'
+  result_scan_scope: string cells only; email + phone + address for rows and for the final answer text

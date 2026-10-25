@@ -1,0 +1,100 @@
+# Runtime configuration (DD §3, §18). Loaded by retail_agent.config.load_settings().
+# Model IDs, budgets, limits and timeouts live here only; code never hard-codes them.
+# Environment overrides are listed in docs/contracts.md §1.2.
+# Model IDs verified on 2026-10-25 (docs/facts.md §3).
+
+version: 1
+
+# Selected by LLM_PROFILE. `free` is recommended for free-tier Gemini keys: the daily quota
+# of Flash models on the free tier is very small, Flash-Lite allows far more requests.
+default_profile: standard
+
+profiles:
+  standard:
+    description: Flash-Lite for routing, Flash for analysis and reports.
+    roles:
+      # Each role is a fallback chain: the first entry is primary; on daily-quota exhaustion
+      # or outage the next entry is tried (free-tier quotas are per model).
+      cheap:
+        - {provider: google, model: gemini-3.5-flash-lite}
+        - {provider: google, model: gemini-3.1-flash-lite}
+      expensive:
+        - {provider: google, model: gemini-3.8-flash}
+        - {provider: google, model: gemini-3.6-flash}
+        - {provider: google, model: gemini-3.5-flash-lite}
+  free:
+    description: Both roles on Flash-Lite; lower answer quality, hundreds of requests per day.
+    roles:
+      cheap:
+        - {provider: google, model: gemini-3.5-flash-lite}
+        - {provider: google, model: gemini-3.1-flash-lite}
+      expensive:
+        - {provider: google, model: gemini-3.5-flash-lite}
+        - {provider: google, model: gemini-3.1-flash-lite}
+
+# Appended to every role chain, but only when the provider's API key is present in the
+# environment (DD §14.1). Requires the provider's LangChain package; skipped with a
+# warning if the package is not installed.
+extra_fallbacks:
+  - {provider: anthropic, model: claude-haiku-5-5}
+
+providers:
+  google:
+    api_key_env: GOOGLE_API_KEY
+  anthropic:
+    api_key_env: ANTHROPIC_API_KEY
+
+llm:
+  temperature: 0
+  call_timeout_s: 30          # per LLM call, capped by the remaining turn deadline (DD §10.7)
+  max_retries: 2              # only per-minute 429, 5xx, timeouts (DD §14.1)
+  backoff_base_s: 1.0         # exponential backoff with full jitter
+  backoff_max_s: 20.0
+  min_time_for_retry_s: 3     # do not start a retry with less remaining time than this
+
+turn:
+  # Deadline per intent in seconds (DD §10.7, R5). `default` covers intents without an
+  # LLM-heavy branch (classify-only turns, schema answers, report library).
+  deadline_s:
+    analysis: 60
+    report_generation: 150
+    default: 30
+  synthesis_reserve_s: 20     # no new tool calls below this remaining time
+  tool_budget:                # one shared budget per turn, includes retries (DD §10.1)
+    analysis: 6
+    report_generation: 10
+  history_turns: 6            # last N turns in prompts, question + final answer only (DD §5.1)
+  max_consecutive_clarifications: 1
+  pii_attempts_before_stop: 2 # PII_COLUMN rejections in one turn that stop the turn (DD §10.2)
+
+bigquery:
+  project_env: GOOGLE_CLOUD_PROJECT   # project that runs (and pays for) query jobs
+  dataset: bigquery-public-data.thelook_ecommerce
+  location: US
+  bytes_cap: 1000000000       # maximum_bytes_billed per query; ~25x a typical scoped query (facts §2)
+  query_timeout_s: 30         # per query, capped by the remaining turn deadline
+  max_rows_to_model: 200      # LIMIT N+1 wrapping (DD §8.3)
+  column_values_limit: 50     # default and maximum for get_column_values (DD §10.1)
+  max_cell_chars: 500         # long strings in results are truncated before reaching the model
+
+paths:
+  data_dir: data
+  app_db: data/retail_agent.sqlite        # executives, threads, reports, audit_log
+  checkpoint_db: data/checkpoints.sqlite  # LangGraph SqliteSaver
+  traces: logs/traces.jsonl
+  content_dir: content                    # catalog.yaml, glossary.md, persona.md, prompts/
+
+tracing:
+  max_field_chars: 20000      # longer prompt/response fields are truncated, with a flag
+
+# Estimated cost for scripts/metrics.py; USD per 1M tokens (facts §3, through 2026-12-31).
+prices:
+  gemini-3.8-flash: {input: 0.75, output: 3.75}
+  gemini-3.6-flash: {input: 0.75, output: 3.75}       # not verified; assumed equal to 3.8 Flash
+  gemini-3.5-flash-lite: {input: 0.30, output: 2.50}
+  gemini-3.1-flash-lite: {input: 0.30, output: 2.50}  # not verified; assumed equal to 3.5 Flash-Lite
+  claude-haiku-5-5: {input: 1.00, output: 5.00}       # not verified; placeholder
+
+eval:
+  judge_role: expensive       # LLM-as-judge for run_golden.py (DD §16.3); another family if configured
+  judge_model: null           # e.g. {provider: anthropic, model: claude-sonnet-5-5}; null = role above
