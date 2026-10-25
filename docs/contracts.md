@@ -1011,8 +1011,10 @@ output: ClassifyOutput (structured)
 | `scripts/seed_executives.py` | `[--dry-run]`; prints executives and brands |
 | `scripts/inspect_trace.py` | `<thread_id> [--traces PATH] [--full]`; chronological view; `--full` disables truncation of prompts |
 | `scripts/metrics.py` | `[--since ISO] [--until ISO] [--traces PATH]`; text table of the DD §15 metrics |
-| `scripts/run_routing_eval.py` | `[--limit N] [--file eval/routing_set.yaml]`; one classify call per case; precision/recall per intent, false refusal rate, misroutes |
-| `scripts/run_smoke.py` | `[--case ID] [--limit N]`; runs `eval/smoke.yaml` through `AgentApp`; pass/fail + p50/p95 per intent |
-| `scripts/run_golden.py` | `[--case ID] [--persona ID] [--limit N] [--judge]`; see the header of `eval/golden_set.yaml` |
+| `scripts/run_routing_eval.py` | `[--rpm N] [--limit N] [--file eval/routing_set.yaml]`; one classify call per case; precision/recall per intent, false refusal rate, misroutes |
+| `scripts/run_smoke.py` | `[--rpm N] [--case ID] [--limit N]`; runs `eval/smoke.yaml` through `AgentApp`; pass/fail + p50/p95 per intent |
+| `scripts/run_golden.py` | `[--rpm N] [--case ID] [--persona ID] [--limit N] [--judge]`; see the header of `eval/golden_set.yaml` |
+
+`--rpm N` delays LLM calls to at most N per minute (free-tier Flash-Lite: 15, use 14). `scripts/_common.py` holds helpers shared by the eval scripts.
 
 Eval file formats are defined in the header comment of each file in `eval/` and are binding for their loaders.
