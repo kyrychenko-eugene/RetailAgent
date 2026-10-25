@@ -121,7 +121,7 @@ def _default_factory(settings: Settings, env: Mapping[str, str] | None) -> Model
     return make
 
 
-def _text(message: BaseMessage) -> str:
+def message_text(message: BaseMessage) -> str:
     content = message.content
     if isinstance(content, str):
         return content
@@ -130,16 +130,16 @@ def _text(message: BaseMessage) -> str:
 
 
 def _prompt_record(messages: Sequence[BaseMessage]) -> list[dict[str, str]]:
-    return [{"role": m.type, "content": _text(m)} for m in messages]
+    return [{"role": m.type, "content": message_text(m)} for m in messages]
 
 
 def _response_record(message: AIMessage, parsed: BaseModel | None) -> str | dict:
     if parsed is not None:
         return parsed.model_dump(mode="json")
     if message.tool_calls:
-        return {"content": _text(message), "tool_calls": [
+        return {"content": message_text(message), "tool_calls": [
             {"name": c.get("name"), "args": c.get("args")} for c in message.tool_calls]}
-    return _text(message)
+    return message_text(message)
 
 
 def _usage(message: AIMessage) -> tuple[int, int]:

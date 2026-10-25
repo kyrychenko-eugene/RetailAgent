@@ -704,6 +704,8 @@ class AgentState(TypedDict, total=False):
     budget: dict                     # TurnBudget.as_dict()
     notes: list[str]                 # one-line notes shown before the response ("Deletion cancelled.")
     response: dict | None            # AssistantResponse.model_dump(), the turn's output
+    outcome: str | None              # trace turn_summary outcome, set by the node that built the response
+    stopped_by: str | None           # AnalysisResult.stopped_by (drives deadline_hit / budget_exhausted)
 ```
 
 `deadline_at` uses the monotonic clock of the running process. A thread resumed in a new process always starts a new turn, which sets a new deadline, so no deadline crosses processes.
@@ -806,6 +808,7 @@ class Deps:
     today: Callable[[], date] = date.today
 
 def build_graph(deps: Deps, checkpointer: BaseCheckpointSaver) -> CompiledStateGraph: ...
+def make_checkpointer(settings: Settings) -> SqliteSaver: ...   # paths.checkpoint_db
 
 class AgentApp:
     """The only object the CLI talks to."""
@@ -835,6 +838,8 @@ Canned texts are owned by `agent/nodes.py`:
 2. Runs the graph with `stream_mode=["custom", "updates"]`.
 3. Catches every exception and maps it to `ErrorEvent`. Known errors get dedicated texts (§6.2). The checkpointed state stays consistent, because the failed turn's partial updates are not committed beyond the last completed node, and `response` is set to `kind="error"`.
 4. Always writes `turn_summary`.
+
+Input masking (§2.5) runs in `send()` before the input reaches the checkpointer, so no checkpoint or trace holds a raw identifier; the `mask_input` node re-masks as defence in depth. After an exception, `send()` closes the run with `update_state(..., as_node="finalize")` and `response.kind="error"`. The first turn of a thread seeds the conversation fields and pins the persona. `rewrite` and `classify` send only the safety rules as system message (their prompts have no persona part); `schema_answer` and the analysis prompts carry the full system prompt.
 
 ---
 

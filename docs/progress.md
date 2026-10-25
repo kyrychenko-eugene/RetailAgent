@@ -205,3 +205,41 @@ Stage log for `docs/implementation-plan.md`. Every stage updates this file (plan
 - Live LLM calls: 6 (two golden questions for `brand_manager_1`, free profile, 3 calls each).
 - BigQuery: 3 queries (about 40 MiB each).
 
+
+---
+
+## Stage 5 — Conversation graph
+
+### What was done
+- **`agent/graph.py`**: `Deps`, `build_graph` (LangGraph `StateGraph`: `mask_input` → `rewrite` (only when history exists) → `classify` → one of `analysis`, `report_generation`, `report_library`, `schema_answer`, `clarify`, `unanswerable`, `refuse` → `finalize`), `make_checkpointer` (`SqliteSaver` on `paths.checkpoint_db`) and the `AgentApp` facade with the turn wrapper (`send`), `login`, `new_thread`, `resume`, `feedback`, `trace_info`.
+- **`agent/nodes.py`**: all nodes, `validate_classification` (contracts §4.1 post-validation), canned texts. Per-turn objects (deadline, `TurnBudget`, tracer, progress writer) are rebuilt from state in every node. Classify sets the per-intent deadline and tool budget (R5). `finalize` appends the turn to history (question + final answer text only), updates the clarification counter and sets the thread title.
+- **`agent/threads.py`**: `ThreadRegistry` on `paths.app_db` (R1). A foreign thread writes `thread_access_denied`; an unknown one writes nothing; both answer `False`.
+- **Persona**: loaded at the first turn of a thread and pinned in state; its hash is bound to every trace record of the turn.
+- **Tests**: `tests/test_agent_graph.py` (22 offline, fake chat models and a fake BigQuery runner) and one `llm` test.
+
+### Deviations and questions
+1. **Input masking runs in `AgentApp.send()` before the graph**, so the raw text never reaches the checkpointer (the plan has it as the first node). The `mask_input` node still runs and re-masks. Contracts §4.10 updated.
+2. **`AgentState` has two new turn fields**, `outcome` and `stopped_by`, so the facade can write `turn_summary` without re-deriving them. Contracts §4.4 updated.
+3. **`rewrite` and `classify` get only the safety rules as system message**; their prompt files have no persona or user slot. `schema_answer` and analysis get the full system prompt.
+4. **`llm.wrapper._text` is now public as `message_text`** (also used by nodes).
+5. **Refusals and errors are not added to history.** Everything else with text is (clarifications, no-access, unanswerable, notices), so a short follow-up can be rewritten.
+6. **`est_cost_usd` is not written in `turn_summary`**; the budget has no per-model split. `scripts/metrics.py` (Stage 8) can price `llm_call` records per model.
+7. **No `confirm_delete` node and no pending-delete cancel on `login`/`new_thread`** (Stage 6). `report_library` is a stub returning a notice, with outcome `library`.
+8. **Failed turn:** the facade closes the run with `update_state(as_node="finalize")` and `response.kind="error"`; the failed turn adds nothing to history. The exception is logged with `log.exception` (no secrets: only the exception text of the provider call).
+9. **Turn id** is `<first 8 chars of thread_id>-<turn_no:04d>`.
+
+### Known issues
+- The turn deadline for the intent starts when classification ends, so rewrite and classify time (a few seconds) comes on top of the 60 s / 150 s.
+- Out-of-scope brand answers cost one expensive call (Stage 4); the final text comes from the guard message, not the model.
+
+### Notes for Stage 6
+- Replace the body of `report_library_node` and add `confirm_delete` (interrupt) plus the cancel path in `AgentApp.login/new_thread/resume` (`CANCEL_SENTINEL`). `Deps.reports` is already carried; tests pass `None`.
+- `state["last_answer"]` holds `AnalysisOutput.model_dump()` of the last `answer` outcome, ready for "save it".
+- `send()` must resume with `Command(resume=text)` when the thread has a pending interrupt.
+
+### Notes for Stage 7
+- `AgentApp.send()` yields `ProgressEvent`, `RateLimitWait`, then one `FinalResponse` or `ErrorEvent`. `resume()` returning `False` means "Thread not found."; `login()` raises `UnknownExecutiveError`.
+- The CLI writes the `session` trace records.
+
+### Usage
+- Live LLM calls: 5 (one two-turn dialogue, free profile).

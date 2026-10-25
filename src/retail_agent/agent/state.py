@@ -44,6 +44,8 @@ class AgentState(TypedDict, total=False):
     budget: dict
     notes: list[str]
     response: dict | None
+    outcome: str | None        # turn_summary outcome, set by the node that produced the response
+    stopped_by: str | None     # AnalysisResult.stopped_by
 
 
 class ReportSummary(BaseModel):
