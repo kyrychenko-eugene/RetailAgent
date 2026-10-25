@@ -33,12 +33,12 @@ def test_package_layout_matches_plan():
 
 
 def test_stubs_raise_not_implemented():
-    from retail_agent.security.input_masking import mask_input
-    from retail_agent.security.scoped_sql import wrap_with_limit
+    from retail_agent.analysis.tools import format_outcome_for_model
+    from retail_agent.reports.search import select_reports_by_thread
     with pytest.raises(NotImplementedError):
-        mask_input("x")
+        format_outcome_for_model(None)
     with pytest.raises(NotImplementedError):
-        wrap_with_limit("SELECT 1", 10)
+        select_reports_by_thread("ceo", "t", None)
 
 
 def test_seams_return_empty():

@@ -296,6 +296,11 @@ class ScopedQuery:
 class ScopedSqlError(Exception): ...           # model SQL could not be parsed or rewritten
 
 RESERVED_NAMES: frozenset[str]                 # {"products", "order_items", "orders", "users"}
+DIALECT = "bigquery"
+CTE_ORDER: tuple[str, ...]                     # ("products", "order_items", "orders", "users")
+
+def generated_ctes(scope: Scope, catalog: Catalog) -> list[exp.CTE]:
+    """The four scoped CTEs as sqlglot nodes (used by build_scoped_sql)."""
 
 def build_scoped_sql(model_sql: str, scope: Scope, catalog: Catalog) -> ScopedQuery:
     """Parse with sqlglot (dialect bigquery), prepend the four CTEs generated from the catalog
@@ -306,7 +311,10 @@ def build_scoped_sql(model_sql: str, scope: Scope, catalog: Catalog) -> ScopedQu
     Precondition: validate_sql(model_sql, ...) returned ok."""
 
 def wrap_with_limit(sql: str, max_rows: int) -> str:
-    """`SELECT * FROM (<sql>) LIMIT max_rows + 1` (DD §8.3), applied after build_scoped_sql."""
+    """Cap the result at max_rows + 1 rows (DD §8.3), applied after build_scoped_sql. A query
+    without LIMIT gets `LIMIT max_rows + 1`; a literal LIMIT above that is tightened in place
+    (OFFSET kept), so the model's ORDER BY is preserved; any other shape is wrapped as
+    `SELECT * FROM (<sql>) LIMIT max_rows + 1`."""
 ```
 
 ### 2.3 `security/validator.py`
@@ -424,8 +432,9 @@ def column_values(column: str, ctx: QueryContext, *, search: str | None = None,
     """column = "table.column", which must be catalog-categorical. A high-cardinality column
     requires search. Generated SQL: SELECT col AS value, COUNT(*) AS n FROM <table> WHERE
     col IS NOT NULL [AND LOWER(CAST(col AS STRING)) LIKE CONCAT('%', LOWER(@search), '%')]
-    GROUP BY value ORDER BY n DESC, value LIMIT @limit. It runs through the same scoped CTEs
-    and guards; search is a query parameter; limit <= column_values_limit."""
+    GROUP BY value ORDER BY n DESC, value LIMIT <n>. It runs through the same scoped CTEs
+    and guards; search is a query parameter; n = min(limit, column_values_limit) is a validated
+    int inlined as a literal. The repeated-query key includes the parameters."""
 
 def normalize_sql(sql: str) -> str:
     """sqlglot canonical form (bigquery dialect, normalize=True, comments dropped, pretty=False).
@@ -439,6 +448,15 @@ class PiiHit:
 def scan_rows_for_pii(rows: Sequence[Mapping[str, Any]]) -> list[PiiHit]: ...   # string cells only
 def scan_text_for_pii(text: str) -> list[PiiHit]: ...                           # final answer check
 ```
+
+Trace: every call writes one `tool_call` record with `tool`, `query_id`, `sql` (the model's SQL),
+`sql_executed` (final scoped SQL, when built), `outcome` (`ok` / `empty` / `cached` / a
+`FailureKind` value), `error_type`, `rows`, `bytes_scanned`, `latency_ms`; `node` defaults to
+`analysis` when the tracer is not bound to a node. Validator rejections with `security_event`
+write a `security_event` (`not_select` → kind `forbidden_statement`, other codes → the kind of the
+same name); the stop after `pii_attempts_before_stop` PII rejections also writes
+`repeated_pii_attempt`. Transient failures (`timeout`, `unavailable`, `deadline`) are not stored
+for the repeated-query check.
 
 Row-limit messages:
 - `user_requested_granularity=True` → `terminal=False`. `user_message` = "That request returns more than {N} rows, which is above the limit I can analyse. I can aggregate it instead (for example by month or category) if you'd like." The model must tell the user and may only *offer* aggregation.

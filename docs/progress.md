@@ -6,7 +6,7 @@ Stage log for `docs/implementation-plan.md`. Every stage updates this file (plan
 |---|---|---|---|---|
 | 0 | Foundations | done | 2026-10-25 | 0 |
 | 1 | Scaffold and infrastructure | done | 2026-10-25 | 0 |
-| 2 | Security core | not started | | |
+| 2 | Security core | done | 2026-10-25 | 0 |
 | 3 | LLM wrapper and resilience | not started | | |
 | 4 | Analysis subgraph | not started | | |
 | 5 | Conversation graph | not started | | |
@@ -100,3 +100,46 @@ Stage log for `docs/implementation-plan.md`. Every stage updates this file (plan
 
 ### Usage
 - Live LLM calls: 0. BigQuery: a handful of dry runs and small queries from the `bq` tests (each bills ~10 MiB per referenced table; the cap-breach query bills nothing).
+
+---
+
+## Stage 2 — Security core
+
+### What was done
+- **`security/identity.py`**: `Scope` (`everything()`, `of()`, case-insensitive `allows()`), `IdentityStore` on the DD §7 SQLite tables (created if missing), `upsert_executive` in one transaction that replaces the brand rows, `get_executive` / `get_scope` / `list_executives`.
+- **`scripts/seed_executives.py [--dry-run]`**: the facts §5 rule, with brands ranked live through `BigQueryRunner.run_query`. Run live twice on 2026-10-25: the same brands as facts §5 both times (bm1: Calvin Klein, 7 For All Mankind, True Religion; bm2: Diesel, Carhartt, Tommy Hilfiger).
+- **`security/scoped_sql.py`**: the four CTEs are generated from `catalog.yaml` (columns, `scope_filter`, `join`, `filter`) as sqlglot nodes and put in front of the model's own `WITH`. Nested `WITH` and set operations work. `@brands` is a query parameter, and there is no brand filter for the CEO. `wrap_with_limit` caps rows at N+1.
+- **`security/validator.py`**: every DD §8.2 rule, in the contract order. Columns are resolved with sqlglot `qualify()` (schema from the catalog, stars expanded) plus scope traversal, so aliases, model CTEs, subqueries, `UNNEST` and output aliases in `GROUP BY` / `ORDER BY` are handled. The brand literal check covers `=`, `IN`, `IN UNNEST`, `LIKE`, literals on either side and `LOWER`/`UPPER`/`TRIM`/`CAST` wrappers. The quasi-identifier rule follows column lineage through CTEs and derived tables.
+- **`security/guards.py`**: `run_scoped_query` runs the repeated-query check (R11), the deadline check, the validator, the scoped CTEs, the row cap, a dry-run against the bytes cap, execution (timeout = min(query timeout, remaining − reserve), job labels), the row-limit rule (user-chosen vs agent-chosen), the PII scan of rows and cell truncation. It also writes the `tool_call` / `security_event` traces. Plus `column_values` (R10), `normalize_sql`, `scan_rows_for_pii` and `scan_text_for_pii`.
+- **`security/input_masking.py`**: card (Luhn + network prefix + card-shaped grouping), then email, then phone (DD §8.5).
+- **Tests**: 186 new offline tests. `test_security_cases.py` loads every case of `eval/security_cases.yaml` (69 SQL, 15 masking, 8 scan) and checks that each accepted case's scoped SQL references the dataset path only inside the generated CTEs, for both scopes. There are also `test_scoped_sql.py`, `test_guards.py` (fake runner and deadline) and `test_identity.py`. 82 new `bq` tests in `test_security_bq.py`: a manager never sees an out-of-scope brand, scoped `SELECT * FROM users` has no PII column, CEO vs manager revenue differ, live `column_values`, and free dry-runs of every accepted case and every golden query without placeholders after CTE injection, for both scopes.
+
+### Deviations and questions
+1. **`wrap_with_limit` tightens a literal top-level LIMIT in place** instead of always wrapping in `SELECT * FROM (...)` (DD §8.3). BigQuery does not guarantee the order of a subquery, so wrapping could reorder "top N" answers. A query without LIMIT gets `LIMIT N+1`, and other shapes are still wrapped. `contracts.md` §2.2 is updated.
+2. **`column_values` inlines its limit** as a literal (a validated int ≤ `column_values_limit`) instead of `@limit`, so the row cap stays a literal top-level LIMIT (deviation 1). `search` stays a query parameter. The repeated-query key includes the parameters, so different searches are not "the same query". `contracts.md` §2.4 is updated.
+3. **Quasi-identifier rule, closing bypasses of the literal DD §8.2 wording (R12).** An identifier also counts as output when it passes through value-returning aggregates (`MIN`, `MAX`, `ANY_VALUE`, `ARRAY_AGG`, `STRING_AGG`, `FIRST_VALUE`, …), a scalar subquery, or a whole-row reference (`TO_JSON_STRING(u)`, `SELECT u`). It also counts when it is grouped via `ROLLUP` / `CUBE` / `GROUPING SETS`, or filtered with `BETWEEN` constants or through `CAST`. Identifiers used only in `COUNT`/`SUM`-style aggregates, in window `PARTITION BY` / `ORDER BY`, or in `IN (subquery)` do not count. Derived demographics (`IF(age < 30, …)`) count as demographic output.
+4. **Brand literal check** also fires for positive predicates outside `WHERE` (e.g. `CASE WHEN brand = 'Nike'`). The user message lists every out-of-scope literal, comma-separated. A `LIKE` pattern is named without its `%` wildcards.
+5. **Forbidden functions** (DD §8.2 names only `EXTERNAL_QUERY`): any table-valued function in `FROM`, plus `EXTERNAL_QUERY`, `VECTOR_SEARCH`, `APPENDS`, `CHANGES`, `SESSION_USER` and the `ML.` / `AI.` / `KEYS.` / `NET.` families.
+6. **Column check fallback.** When sqlglot `qualify()` gives up (an alias-qualified column missing from its source, e.g. `u.first_name`), the validator falls back to raw column names: a blocked name → `pii_column`, otherwise `unknown_column`.
+7. **Identity fails closed.** An executive with `scope_all = 0` and no brand rows raises `UnknownExecutiveError`; it never becomes "all brands".
+8. **Unspecified outcomes in guards (DD §10.2, §10.7):** `DEADLINE` is terminal with no user message, so the loop goes to synthesis. `TIMEOUT` and `BAD_REQUEST` are non-terminal. `PII_IN_RESULT` is non-terminal and writes `pii_in_result` with kinds and columns only. A repeated failure is non-terminal. Transient failures (timeout, unavailable, deadline) are not stored for R11. The user-facing wording for bytes cap, unavailable and repeated PII was written here (DD gives no text).
+9. **`tool_call.node`** defaults to `analysis` when the tracer is not bound to a node, because the trace schema requires `node`.
+10. **`tests/test_scaffold.py`** (Stage 1) asserted that two security functions are stubs. It now uses two later-stage stubs.
+
+### Known issues
+- `build_scoped_sql` regenerates the model's SQL through sqlglot. All 24 accepted security cases and the 12 golden queries without placeholders dry-run cleanly for both scopes, but an unusual BigQuery construct could still be transpiled differently. The dry-run error then goes back to the model as a normal `bad_request`.
+- The quasi-identifier rule does not see identifiers hidden in arithmetic filters (`id + 0 = 5`), and it does not cover narrow demographic filters (the known gap of DD §8.4, k-anonymity in the HLD).
+- The brand check is a UX rule. `REGEXP_CONTAINS`, `STARTS_WITH` and alias-renamed brand columns are not checked; the CTEs return no out-of-scope rows anyway (Stage 0 deviation 7).
+- `llm/wrapper.Deadline` is Stage 3's work and still a stub. Guards only call `deadline.remaining()`, and the tests use a duck-typed fake.
+
+### Notes for Stage 4
+- Build one `QueryContext` per turn (it holds the R11 store and the PII attempt counter). `run_scoped_query(sql, qctx, user_requested_granularity=...)` and `column_values(...)` never raise for model-caused problems.
+- Stop the loop on `outcome.terminal` and surface `outcome.user_message` (out-of-scope brand, repeated PII, bytes cap, unavailable). `DEADLINE` is terminal with no user message: go straight to synthesis.
+- Send the model `model_message` / `hint` only; `QuerySuccess.sql` is the model's own SQL. The scoped SQL is only in the `sql_executed` trace field.
+- Guards already write the `tool_call` record, so the analysis tools must not write a second one. Bind the tracer with `node="analysis"` (or `report_generation`) to get the right `node`.
+- Run `scan_text_for_pii()` on the final answer (DD §8.3) and write `pii_in_answer` if it finds anything.
+
+### Usage
+- Live LLM calls: 0.
+- BigQuery: two `pytest -m bq` runs (5 executed queries each, ~40 MiB billed per query), three seed runs (one query each over the base tables), and about 160 dry runs (free).
+
