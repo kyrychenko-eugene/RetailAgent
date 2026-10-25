@@ -22,6 +22,7 @@ from retail_agent.bq_client import DryRunResult, QueryResult
 from retail_agent.config import load_text
 from retail_agent.llm.errors import QuotaExhaustedError
 from retail_agent.llm.wrapper import LLMClient
+from retail_agent.reports.store import ReportStore
 from retail_agent.security.identity import IdentityStore, UnknownExecutiveError
 from retail_agent.tracing import NullTracer, validate_record
 
@@ -129,7 +130,8 @@ class Env:
         self.identity.upsert_executive("bm", "Brand Manager", scope_all=False, brands=["Levi's"])
         self.deps = Deps(
             settings=settings, catalog=catalog, glossary=glossary or "", tracer=self.tracer,
-            identity=self.identity, threads=ThreadRegistry(settings.paths.app_db), reports=None,
+            identity=self.identity, threads=ThreadRegistry(settings.paths.app_db),
+            reports=ReportStore(settings.paths.app_db),
             bq=FakeRunner(), llm=LLMClient(settings, factory=lambda spec, t: Fake(script=self.script)),
             today=lambda: date(2026, 10, 25))
         self.app = AgentApp(self.deps, checkpointer or InMemorySaver())
@@ -181,14 +183,14 @@ def test_schema_question_is_scope_aware(settings, catalog):
     assert e.summaries()[-1]["outcome"] == "schema_answer"
 
 
-def test_clarify_unanswerable_and_library_stub(env):
+def test_clarify_and_unanswerable(env):
     env.script.classify += [verdict("clarify", clarification_question="New report or a saved one?"),
                             verdict("unanswerable"), verdict("report_library", library_action="list")]
     r1, r2, r3 = env.final("report on Nike"), env.final("product weight?"), env.final("list my reports")
     assert (r1.kind, r1.text) == ("clarification", "New report or a saved one?")
     assert r2.kind == "unanswerable" and r2.text.startswith("That information isn't in our data. Available:")
     assert "orders" in r2.text and "Derived metrics" in r2.text
-    assert r3.kind == "notice"
+    assert (r3.kind, r3.text) == ("library_list", "You have no saved reports.")
     assert [s["outcome"] for s in env.summaries()] == ["clarification", "cannot_answer", "library"]
 
 

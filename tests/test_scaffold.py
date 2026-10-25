@@ -32,12 +32,6 @@ def test_package_layout_matches_plan():
         assert (root / sub / "__init__.py").exists()
 
 
-def test_stubs_raise_not_implemented():
-    from retail_agent.reports.search import select_reports_by_thread
-    with pytest.raises(NotImplementedError):
-        select_reports_by_thread("ceo", "t", None)
-
-
 def test_seams_return_empty():
     from retail_agent.agent.prompt_assembly import load_user_preferences
     from retail_agent.analysis.tools import retrieve_golden_examples

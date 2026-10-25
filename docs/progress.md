@@ -243,3 +243,35 @@ Stage log for `docs/implementation-plan.md`. Every stage updates this file (plan
 
 ### Usage
 - Live LLM calls: 5 (one two-turn dialogue, free profile).
+
+---
+
+## Stage 6 — Saved reports and deletion
+
+### What was done
+- **`reports/store.py`**: `ReportStore` on `paths.app_db` (`reports`, `audit_log`), `build_search_text`, `ReportRecord`. Every query filters by `owner_id` in SQL. `delete` removes the owned subset and writes one audit row (IDs and count only) in one transaction.
+- **`reports/search.py`**: `select_reports_by_entity` (no LLM call when the owner has no reports; union of the model's owned IDs and substring matches of its terms plus the request), `select_reports_by_thread` (no LLM).
+- **`reports/deletion.py`**: `make_pending_delete` (snapshot, re-checked against the owner), `confirmation_prompt`, `is_confirmation`, `execute_delete` (deletes exactly the snapshot, writes the `deletion` trace event).
+- **`agent/nodes.py`**: `report_library_node` (save / list / delete), `confirm_delete_node` (`interrupt()`), `route_after_library`; `finalize` copies `notes` into `response.notes`.
+- **`agent/graph.py`**: `confirm_delete` node; `send()` resumes with `Command(resume=...)` when the thread has an open interrupt and yields `ConfirmRequest`; `login`, `new_thread` and `resume` of another thread cancel a pending delete.
+- **Tests**: `tests/test_reports.py` (14 offline); the Stage 5 library stub test now expects the real list answer; the scaffold test for the `NotImplementedError` stub was removed.
+
+### Deviations and questions
+1. **The reply to a confirmation is its own turn** (new `turn_no` and `turn_id`, fresh budget and deadline), not a continuation of the asking turn as contracts §6.3 said. Reason: one `turn_summary` per user message, and the old monotonic deadline may have long expired. Contracts §6.3 updated.
+2. **Cancel on leaving a thread writes a `session` record** (`detail.action = "pending_delete_cancelled"`) instead of a `turn_summary`, since it is not a user turn. The `delete_cancelled` outcome stays unused.
+3. **The request text is also used as a substring term** (with the model's `search_terms`), as contracts §5.2 says for `delete_query`; terms shorter than 2 characters are dropped.
+4. **Hallucinated or foreign model IDs** are counted in the `report_library` node record (`model_ids_dropped`), with no `security_event`: owner-filtered SQL cannot tell the two apart.
+5. **Save is not deduplicated**: asking twice saves two reports.
+6. **A confirmation shown after a process restart stays valid** for the next message (the interrupt is in the checkpoint).
+
+### Known issues
+- The confirm reply is rewritten only when the thread has history, like any turn.
+
+### Notes for Stage 7
+- `send()` ends with `ConfirmRequest` when a delete awaits confirmation; the next `send(text)` answers it, so the CLI needs no special input mode. `response.notes` holds "Deletion cancelled." for the follow-up turn.
+- `login`, `new_thread` and `resume` already cancel the pending delete; the CLI must only call them.
+- Progress steps added: "Searching your reports", "Deleting reports".
+
+### Usage
+- Live LLM calls: 0 (all behaviour tested with fakes).
+

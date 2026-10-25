@@ -958,7 +958,8 @@ The custom stream payload is `{"type": "progress", "step": ...}` or `{"type": "r
 - In the node, a resume value `v` is handled like this:
   - `is_confirmation(v)` → `execute_delete`, then `response.kind = "deleted"`.
   - `v == CANCEL_SENTINEL` → clear `pending_delete` and end without a response. The facade sends this when leaving the thread (`login`, `new_thread`, `resume` of another thread).
-  - Anything else → clear `pending_delete`, append "Deletion cancelled." to `notes`, set `user_input = mask_input(v)`, and route to `mask_input`/`rewrite` as a normal turn of the same thread. The turn id stays the same, and one `turn_summary` is written.
+  - Anything else → clear `pending_delete`, append "Deletion cancelled." to `notes`, set `user_input = mask_input(v)`, and route to `mask_input`/`rewrite` as a normal turn of the same thread. The reply is its own user turn: the node sets `turn_no + 1`, a new `turn_id`, a fresh budget and deadline, and one `turn_summary` is written for it. The turn that asked for the confirmation has already written its own summary (`confirm_pending`). `finalize` copies `notes` into `response.notes`.
+- `confirm_delete` leaves through `Command(goto=...)`: `finalize` (deleted), `mask_input` (new turn) or `END` (cancel). The cancel path writes a `session` record with `detail.action = "pending_delete_cancelled"` and no `turn_summary`.
 
 ### 6.4 CLI (`cli/app.py`, `__main__.py`)
 

@@ -12,17 +12,20 @@ from typing import Callable, Iterator, Literal
 
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, START, StateGraph
+from langgraph.types import Command
 
 from retail_agent.agent import nodes
 from retail_agent.agent.prompt_assembly import load_persona
 from retail_agent.agent.state import (
-    AgentState, AssistantResponse, ErrorEvent, FinalResponse, ProgressEvent, RateLimitWait, UiEvent,
+    AgentState, AssistantResponse, ConfirmRequest, ErrorEvent, FinalResponse, ProgressEvent, RateLimitWait,
+    ReportSummary, UiEvent,
 )
 from retail_agent.agent.threads import ThreadRegistry
 from retail_agent.bq_client import BigQueryError, BigQueryRunner, BigQueryUnavailableError
 from retail_agent.config import Catalog, Settings
 from retail_agent.llm.errors import QuotaExhaustedError
 from retail_agent.llm.wrapper import LLMClient, TurnBudget
+from retail_agent.reports.deletion import CANCEL_SENTINEL
 from retail_agent.reports.store import ReportStore
 from retail_agent.security.identity import Executive, IdentityStore
 from retail_agent.security.input_masking import mask_input
@@ -68,7 +71,7 @@ def build_graph(deps: Deps, checkpointer):
         ("report_generation", nodes.report_generation_node), ("schema_answer", nodes.schema_answer_node),
         ("clarify", nodes.clarify_node), ("unanswerable", nodes.unanswerable_node),
         ("refuse", nodes.refuse_node), ("report_library", nodes.report_library_node),
-        ("finalize", nodes.finalize_node),
+        ("confirm_delete", nodes.confirm_delete_node), ("finalize", nodes.finalize_node),
     ]:
         g.add_node(name, functools.partial(fn, deps))
     g.add_edge(START, "mask_input")
@@ -79,7 +82,10 @@ def build_graph(deps: Deps, checkpointer):
                 "unanswerable", "refuse"]
     g.add_conditional_edges("classify", nodes.route_by_intent, branches)
     for name in branches:
-        g.add_edge(name, "finalize")
+        if name != "report_library":
+            g.add_edge(name, "finalize")
+    g.add_conditional_edges("report_library", nodes.route_after_library, ["confirm_delete", "finalize"])
+    # confirm_delete leaves through Command(goto=...): finalize, mask_input (new turn) or END (cancel)
     g.add_edge("finalize", END)
     return g.compile(checkpointer=checkpointer)
 
@@ -114,6 +120,7 @@ class AgentApp:
 
     def login(self, exec_id: str) -> Executive:
         executive = self.deps.identity.get_executive(exec_id)   # raises UnknownExecutiveError
+        self._cancel_pending_delete()
         self.current_exec = executive
         self.current_thread_id = self.deps.threads.create(exec_id)
         return executive
@@ -121,6 +128,7 @@ class AgentApp:
     def new_thread(self) -> str:
         if self.current_exec is None:
             raise RuntimeError(NO_LOGIN_MESSAGE)
+        self._cancel_pending_delete()
         self.current_thread_id = self.deps.threads.create(self.current_exec.exec_id)
         return self.current_thread_id
 
@@ -133,6 +141,8 @@ class AgentApp:
                 self.deps.tracer.bind(exec_id=exec_id).security_event(
                     "thread_access_denied", None, thread_id=thread_id)
             return False
+        if thread_id != self.current_thread_id:
+            self._cancel_pending_delete()
         self.current_thread_id = thread_id
         return True
 
@@ -143,6 +153,26 @@ class AgentApp:
 
     def trace_info(self) -> tuple[str | None, Path]:
         return self.current_thread_id, self.deps.settings.paths.traces
+
+    def _pending_interrupt(self, thread_id: str | None):
+        """The open `confirm_delete` interrupt of the thread, or None."""
+        if not thread_id:
+            return None
+        snapshot = self.graph.get_state({"configurable": {"thread_id": thread_id}})
+        return next((i for t in snapshot.tasks for i in t.interrupts), None)
+
+    def _cancel_pending_delete(self) -> None:
+        """Leaving a thread clears its pending delete (DD §11.3 step 5). Never blocks the caller."""
+        thread_id = self.current_thread_id
+        try:
+            if self._pending_interrupt(thread_id) is None:
+                return
+            self.graph.invoke(Command(resume=CANCEL_SENTINEL), {"configurable": {"thread_id": thread_id}})
+            self.deps.tracer.bind(thread_id=thread_id,
+                                  exec_id=self.current_exec.exec_id if self.current_exec else None
+                                  ).write("session", detail={"action": "pending_delete_cancelled"})
+        except Exception:
+            log.exception("Could not cancel the pending delete of thread %s", thread_id)
 
     # -- one turn ----------------------------------------------------------------------
 
@@ -158,6 +188,7 @@ class AgentApp:
         turn = self.deps.settings.turn
 
         values = self.graph.get_state(config).values
+        resuming = self._pending_interrupt(thread_id) is not None   # the input answers a confirmation
         seed: dict = {}
         if not values:   # first turn of the thread: pin the persona for the whole conversation
             persona_text, persona_hash = load_persona(self.deps.settings.paths.content_dir)
@@ -173,7 +204,7 @@ class AgentApp:
         masked = mask_input(text)   # before the checkpointer sees the input
         if masked.counts:
             tracer.pii_in_input(masked.counts)
-        turn_input = {
+        turn_input = Command(resume=masked.text) if resuming else {
             **seed, "turn_no": turn_no, "turn_id": turn_id, "user_input": masked.text,
             "rewritten_question": masked.text, "classify": None, "notes": [], "response": None,
             "outcome": None, "stopped_by": None, "budget": TurnBudget(0).as_dict(),
@@ -183,6 +214,8 @@ class AgentApp:
         error: tuple[str, str] | None = None
         try:
             for mode, chunk in self.graph.stream(turn_input, config, stream_mode=["custom", "updates"]):
+                if mode == "updates" and isinstance(chunk, dict) and "__interrupt__" in chunk:
+                    continue   # read from the checkpoint below
                 if mode == "custom":
                     event = _ui_event(chunk)
                     if event is not None:
@@ -192,12 +225,13 @@ class AgentApp:
             error = error_for(exc, thread_id)
 
         state = self.graph.get_state(config).values
+        confirm = self._pending_interrupt(thread_id) if error is None else None
         if error is not None:
             message, error_type = error
             # Close the interrupted run as if `finalize` had completed, so the next turn starts clean.
             self.graph.update_state(config, {
                 "response": AssistantResponse(kind="error", text=message, thread_id=thread_id).model_dump(),
-                "outcome": "error"}, as_node="finalize")
+                "outcome": "error", "pending_delete": None}, as_node="finalize")
             state = self.graph.get_state(config).values
         else:
             error_type = _STOP_ERROR_TYPE.get(state.get("stopped_by") or "")
@@ -215,6 +249,8 @@ class AgentApp:
 
         if error is not None:
             yield ErrorEvent(error[0], error[1])
+        elif confirm is not None:
+            yield ConfirmRequest(confirm.value["prompt"], [ReportSummary(**r) for r in confirm.value["reports"]])
         else:
             yield FinalResponse(AssistantResponse(**state["response"]))
 

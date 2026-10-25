@@ -13,17 +13,23 @@ from typing import TYPE_CHECKING, Iterator, Literal
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.config import get_stream_writer
+from langgraph.graph import END
+from langgraph.types import Command, interrupt
 from pydantic import BaseModel
 
 from retail_agent.agent.prompt_assembly import (
     build_system_prompt, history_block, load_prompt, load_user_preferences, render, scope_description,
 )
 from retail_agent.agent.state import (
-    AgentState, AssistantResponse, ProgressEvent, RateLimitWait, UiEvent,
+    AgentState, AssistantResponse, ProgressEvent, RateLimitWait, ReportSummary, UiEvent,
 )
 from retail_agent.analysis.output import AnalysisOutput, render_markdown
 from retail_agent.analysis.subgraph import run_analysis
 from retail_agent.llm.wrapper import Deadline, TurnBudget, TurnContext, message_text
+from retail_agent.reports.deletion import (
+    CANCEL_SENTINEL, confirmation_prompt, execute_delete, is_confirmation, make_pending_delete,
+)
+from retail_agent.reports.search import select_reports_by_entity, select_reports_by_thread
 from retail_agent.security.guards import QueryContext
 from retail_agent.security.input_masking import mask_input
 from retail_agent.tracing import Tracer
@@ -36,7 +42,10 @@ Intent = Literal["analysis", "report_generation", "report_library", "schema_ques
 
 OFF_TOPIC_TEXT = "I can only help with analysis of our sales, products and customers data."
 MALICIOUS_TEXT = "I can't help with that request."
-LIBRARY_STUB_TEXT = "Saved reports are not available yet."
+NOTHING_TO_SAVE_TEXT = "There is no answer to save yet. Ask a question first, then ask me to save it."
+NO_REPORTS_TEXT = "You have no saved reports."
+NO_MATCH_TEXT = "No reports match."
+DELETE_CANCELLED_NOTE = "Deletion cancelled."
 _NO_CLARIFY = "Do not choose `clarify` now; pick the most likely reading instead."
 _REWRITE_MAX_CHARS = 2000
 _NO_HISTORY_KINDS = {"error", "refusal"}
@@ -280,11 +289,89 @@ def refuse_node(deps: "Deps", state: AgentState) -> dict:
 
 
 def report_library_node(deps: "Deps", state: AgentState) -> dict:
-    """Hand-off point for Stage 6 (save / list / delete). Stub until then."""
+    """Save, list and delete saved reports. A delete with matches stores the pending action
+    (no response yet) and the graph continues in `confirm_delete`."""
     tracer = _tracer(deps, state, "report_library")
+    ctx = _context(deps, state, tracer, "report_library")
+    if deps.reports is None:
+        raise RuntimeError("Report store is not configured")
+    store, owner = deps.reports, state["owner_exec_id"]
+    classify = state["classify"]
+    action = classify.get("library_action") or "list"
+    update: dict = {"outcome": "library"}
+    with _span(tracer, action=action) as span:
+        if action == "save":
+            if not state.get("last_answer"):
+                update["response"] = _response(state, "notice", text=NOTHING_TO_SAVE_TEXT)
+            else:
+                record = store.save(owner, state["thread_id"], AnalysisOutput(**state["last_answer"]))
+                update["response"] = _response(
+                    state, "saved", text=f'Saved "{record.title}" to your reports.', reports=[record.summary()])
+        elif action == "list":
+            reports = store.list(owner)
+            text = f"You have {len(reports)} saved report{'s' if len(reports) != 1 else ''}." if reports \
+                else NO_REPORTS_TEXT
+            update["response"] = _response(state, "library_list", text=text, reports=reports)
+        else:
+            ctx.emit(ProgressEvent("Searching your reports"))
+            if classify.get("delete_scope") == "this_conversation":
+                selection = select_reports_by_thread(owner, state["thread_id"], store)
+            else:
+                selection = select_reports_by_entity(
+                    classify.get("delete_query") or state["rewritten_question"], owner, store, deps.llm, ctx,
+                    deps.settings.paths.content_dir)
+            span.update(matched=len(selection.report_ids), model_ids_dropped=len(selection.model_ids_dropped))
+            if selection.report_ids:
+                update.update(
+                    pending_delete=make_pending_delete(owner, state["thread_id"], selection, store,
+                                                       state.get("turn_id", "")),
+                    response=None, outcome="confirm_pending")
+            else:
+                update["response"] = _response(state, "nothing_to_delete", text=NO_MATCH_TEXT)
+    update["budget"] = ctx.budget.as_dict()
+    return update
+
+
+def route_after_library(state: AgentState) -> str:
+    return "confirm_delete" if state.get("response") is None and state.get("pending_delete") else "finalize"
+
+
+def confirm_delete_node(deps: "Deps", state: AgentState):
+    """Asks for confirmation with `interrupt()`; the resume value is the next user message (R4).
+    The node re-runs from the top on resume, so everything before `interrupt` is side-effect free."""
+    pending = state["pending_delete"]
+    summaries = [ReportSummary(id=r["id"], title=r["title"], description="", created_at=r["created_at"])
+                 for r in pending["reports"]]
+    value = str(interrupt({"type": "confirm_delete", "prompt": confirmation_prompt(pending),
+                           "reports": [s.model_dump() for s in summaries]}))
+    if value == CANCEL_SENTINEL:   # the user left the thread; nothing else happens
+        return Command(update={"pending_delete": None}, goto=END)
+
+    # The reply is a new user turn of the same thread.
+    turn_no = state.get("turn_no", 0) + 1
+    turn_id = f"{state['thread_id'][:8]}-{turn_no:04d}"
+    update: dict = {
+        "pending_delete": None, "turn_no": turn_no, "turn_id": turn_id, "budget": TurnBudget(0).as_dict(),
+        "classify": None, "response": None, "outcome": None, "stopped_by": None, "notes": [],
+        "deadline_at": time.monotonic() + deps.settings.turn.deadline_for("default")}
+    tracer = _tracer(deps, {**state, **update}, "confirm_delete")
+    owned = pending["owner_id"] == state["owner_exec_id"] and pending["thread_id"] == state["thread_id"]
+    if is_confirmation(value) and owned:
+        with _span(tracer):
+            _emit(ProgressEvent("Deleting reports"))
+            count = execute_delete(pending, deps.reports, tracer)
+        update["response"] = _response(
+            {**state, **update}, "deleted", reports=summaries,
+            text=f"Deleted {count} report{'s' if count != 1 else ''}.")
+        update["outcome"] = "deleted"
+        return Command(update=update, goto="finalize")
+
     with _span(tracer):
-        pass
-    return {"response": _response(state, "notice", text=LIBRARY_STUB_TEXT), "outcome": "library"}
+        if not owned:
+            tracer.security_event("report_access_denied", None, action_id=pending["action_id"])
+    masked = mask_input(value)
+    update.update(user_input=masked.text, rewritten_question=masked.text, notes=[DELETE_CANCELLED_NOTE])
+    return Command(update=update, goto="mask_input")
 
 
 def finalize_node(deps: "Deps", state: AgentState) -> dict:
@@ -302,6 +389,7 @@ def finalize_node(deps: "Deps", state: AgentState) -> dict:
             history.append({"question": state["rewritten_question"], "answer": answer})
         if state.get("turn_no", 0) == 1:
             deps.threads.set_title(state["thread_id"], state["user_input"])
-    return {"history": history,
+        notes = [*state.get("notes", []), *response.get("notes", [])]
+    return {"history": history, "response": {**response, "notes": notes},
             "consecutive_clarifications": state.get("consecutive_clarifications", 0) + 1
             if kind == "clarification" else 0}
