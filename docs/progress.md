@@ -7,7 +7,7 @@ Stage log for `docs/implementation-plan.md`. Every stage updates this file (plan
 | 0 | Foundations | done | 2026-10-25 | 0 |
 | 1 | Scaffold and infrastructure | done | 2026-10-25 | 0 |
 | 2 | Security core | done | 2026-10-25 | 0 |
-| 3 | LLM wrapper and resilience | not started | | |
+| 3 | LLM wrapper and resilience | done | 2026-10-25 | 1 |
 | 4 | Analysis subgraph | not started | | |
 | 5 | Conversation graph | not started | | |
 | 6 | Saved reports and deletion | not started | | |
@@ -130,7 +130,7 @@ Stage log for `docs/implementation-plan.md`. Every stage updates this file (plan
 - `build_scoped_sql` regenerates the model's SQL through sqlglot. All 24 accepted security cases and the 12 golden queries without placeholders dry-run cleanly for both scopes, but an unusual BigQuery construct could still be transpiled differently. The dry-run error then goes back to the model as a normal `bad_request`.
 - The quasi-identifier rule does not see identifiers hidden in arithmetic filters (`id + 0 = 5`), and it does not cover narrow demographic filters (the known gap of DD §8.4, k-anonymity in the HLD).
 - The brand check is a UX rule. `REGEXP_CONTAINS`, `STARTS_WITH` and alias-renamed brand columns are not checked; the CTEs return no out-of-scope rows anyway (Stage 0 deviation 7).
-- `llm/wrapper.Deadline` is Stage 3's work and still a stub. Guards only call `deadline.remaining()`, and the tests use a duck-typed fake.
+- `llm/wrapper.Deadline` was a stub in this stage; it is real since Stage 3.
 
 ### Notes for Stage 4
 - Build one `QueryContext` per turn (it holds the R11 store and the PII attempt counter). `run_scoped_query(sql, qctx, user_requested_granularity=...)` and `column_values(...)` never raise for model-caused problems.
@@ -143,3 +143,31 @@ Stage log for `docs/implementation-plan.md`. Every stage updates this file (plan
 - Live LLM calls: 0.
 - BigQuery: two `pytest -m bq` runs (5 executed queries each, ~40 MiB billed per query), three seed runs (one query each over the base tables), and about 160 dry runs (free).
 
+---
+
+## Stage 3 — LLM wrapper and resilience
+
+### What was done
+- **`llm/errors.py`**: `classify_rate_limit` (docs/facts.md §4 rule; also detects `RESOURCE_EXHAUSTED` in the text), `retry_after_seconds` (`Retry-After` header, `RetryInfo.retryDelay`, or "retry in Ns" in the message), plus helpers `http_status`, `is_timeout`, `is_transport_error`. They walk `__cause__` / `__context__`, so errors wrapped by `langchain-google-genai` are still recognised.
+- **`llm/wrapper.py`**: `Deadline`, `TurnBudget`, `TurnContext`, and `LLMClient.call_llm` as in contracts §3.2. The default factory builds `ChatGoogleGenerativeAI` / `ChatAnthropic` with `max_retries=0`, so the SDK does not retry behind our accounting. A model is built per attempt, because its timeout depends on the remaining deadline.
+- **Tests**: `tests/test_llm_wrapper.py` (20 offline tests with a fake chat model) and one `llm` test.
+
+### Deviations and questions
+1. **`LLMClient.__init__` has two extra keyword-only arguments**, `sleep` and `rng`, so tests need no real waits. `contracts.md` §3.2 is updated.
+2. **Structured output uses `with_structured_output(schema, include_raw=True)`**, to get token usage and a parse error without an exception. A parse failure retries once on the same model, then raises `LLMOutputError`. `schema` and `tools` together raise `ValueError`.
+3. **Failure classification not spelled out in the contract:** a per-minute 429 and a 5xx both map to `LLMUnavailableError` / trace `error_type=llm_unavailable` (the trace has no rate-limit type; the record also carries `rate_limit="per_minute"`). When every model fails only on timeouts, `LLMTimeoutError` is raised. Mixed daily-quota and outage failures raise `LLMUnavailableError`. Unknown exceptions raise `LLMError` (`internal`) without retry.
+4. **Key check.** With the default factory (or when `env` is passed), a model whose provider key is missing is skipped. With an injected factory and no `env`, nothing is skipped. A missing `langchain-anthropic` skips that model silently (logged).
+5. **`retry_count`** on a trace record is the number of retries on that model before the attempt; `LLMResult.retry_count` is the total for the call. `fallback_used` means the answering model is not first in the configured chain.
+6. **Output-parse retry** also needs room before the deadline; it re-checks the timeout rule and raises `DeadlineExceededError` if there is none.
+
+### Known issues
+- **No real 429 body was captured** (docs/progress.md deviation 11 asked for one). A deliberate 429 needs burning the quota, so I did not trigger it. The classifier works on the documented `QuotaFailure` / `RetryInfo` shape and on the AIP-193 / `quota_exceeded` forms. Capture one body when a real 429 shows up and add it to `test_classify_helpers`.
+- `langchain-google-genai` warns that `gemini-3.5-flash-lite` ignores `temperature`; harmless.
+
+### Notes for Stage 4
+- Call `call_llm(..., is_synthesis=True)` for the forced final answer, so the synthesis reserve is not subtracted from its timeout.
+- Catch `DeadlineExceededError` in the loop and go to synthesis. `QuotaExhaustedError.models` and `.primary_model` name the models for the user message (DD §14.1.1).
+- The wrapper writes the `llm_call` records and counts `ctx.budget.llm_calls` / tokens; nodes must not do it again.
+
+### Usage
+- Live LLM calls: 1 (one `llm` test run, free profile).

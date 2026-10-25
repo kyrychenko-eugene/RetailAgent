@@ -502,6 +502,7 @@ def classify_rate_limit(exc: BaseException) -> RateLimitKind | None:
     """None if not a 429. Rule: docs/facts.md §4 (PerDay / quota_exceeded / 'daily' -> daily)."""
 def retry_after_seconds(exc: BaseException) -> float | None:
     """From RetryInfo.retryDelay or the Retry-After header."""
+# Also: http_status(exc), is_timeout(exc), is_transport_error(exc); all look through __cause__/__context__.
 ```
 
 ### 3.2 `llm/wrapper.py`
@@ -554,7 +555,9 @@ ModelFactory = Callable[[ModelSpec, float], BaseChatModel]   # (spec, timeout_s)
 
 class LLMClient:
     def __init__(self, settings: Settings, *, factory: ModelFactory | None = None,
-                 env: Mapping[str, str] | None = None) -> None: ...
+                 env: Mapping[str, str] | None = None,
+                 sleep: Callable[[float], None] = time.sleep,          # tests only
+                 rng: Callable[[], float] = random.random) -> None: ...  # tests only (backoff jitter)
     def call_llm(self, role: Literal["cheap", "expensive"], messages: Sequence[BaseMessage],
                  ctx: TurnContext, *, node: str,
                  schema: type[BaseModel] | None = None,
