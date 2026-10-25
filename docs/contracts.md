@@ -113,6 +113,8 @@ The keys are exactly those in `config.yaml`. Overrides are applied after the pro
 | `GOOGLE_API_KEY`, `ANTHROPIC_API_KEY` | provider keys; read only through `require_api_key` |
 | `LANGSMITH_API_KEY` | optional, documented only (DD §15) |
 
+A variable that is empty or still holds a `.env.example` placeholder (`your-gemini-api-key`, `your-gcp-project-id`) counts as unset. `UiEvent` and its event classes live in `agent/state.py`.
+
 A missing `GOOGLE_CLOUD_PROJECT` is not an error at load time. It becomes a `ConfigError` the first time a `BigQueryRunner` is created, so offline tests never need it.
 
 ### 1.3 `tracing.py`: JSONL trace
@@ -184,7 +186,10 @@ class Tracer:
 class NullTracer(Tracer): ...   # tests: keeps records in .records (list[dict]), writes nothing
 
 def read_traces(path: Path) -> Iterator[dict]: ...   # used by scripts; skips malformed lines
+def validate_record(record: Mapping[str, Any]) -> list[str]: ...   # contract-schema check; [] = valid
 ```
+
+`write()`, `security_event()` and `turn_summary()` raise `ValueError` for an unknown event, `kind` or `outcome`, and `bind()` for an unknown context key. Truncation applies to `prompt`, `response` and `sql`; a non-string value that is too long is stored as its truncated JSON text.
 
 `secret_values` = the values of every provider key env var that is set. Values shorter than 8 characters are ignored.
 
@@ -229,10 +234,15 @@ class BigQueryRunner:
                   labels: Mapping[str, str] | None = None) -> QueryResult:
         """Execute with maximum_bytes_billed, job timeout and labels; maps errors to the types above."""
 
+def create_runner(settings: Settings) -> BigQueryRunner:
+    """Runner from settings. ConfigError if bigquery.project is None (GOOGLE_CLOUD_PROJECT unset)."""
+
 def to_query_parameters(params: Mapping[str, QueryParamValue]) -> list[bigquery.ScalarQueryParameter | bigquery.ArrayQueryParameter]: ...
 def sanitize_labels(labels: Mapping[str, str]) -> dict[str, str]:
     """Keys/values lower-case, [a-z0-9_-] only, max 63 chars; drop empty values."""
 ```
+
+Error messages of the typed errors are model-safe: the dataset path is replaced by `<dataset>` and BigQuery's `Location:` / `Job ID:` suffix is removed. `to_query_parameters` raises `TypeError` for an unsupported value; an empty list is sent as `ARRAY<STRING>`.
 
 Job labels are `thread_id`, `turn_id`, `exec_id` and `app=retail_agent`.
 

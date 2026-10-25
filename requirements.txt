@@ -1,0 +1,16 @@
+# Pinned on 2026-10-25 (Python 3.12). Install with: pip install -r requirements.txt
+langgraph==1.2.17
+langgraph-checkpoint-sqlite==3.1.2
+langchain-google-genai==4.4.2
+langchain-core==1.7.0
+google-cloud-bigquery==3.46.2
+db-dtypes==1.9.0            # BigQuery to_dataframe()
+pandas==3.1.0
+pyarrow==26.0.0
+sqlglot==30.24.0
+pydantic==2.14.1
+pyyaml==6.0.3
+rich==15.0.0
+python-dotenv==1.2.4
+pytest==9.1.1
+-e .

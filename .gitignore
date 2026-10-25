@@ -13,3 +13,4 @@ __pycache__/
 # Runtime files (SQLite databases, traces)
 data/
 logs/
+*.egg-info/

@@ -5,7 +5,7 @@ Stage log for `docs/implementation-plan.md`. Every stage updates this file (plan
 | Stage | Title | Status | Date | Live LLM calls |
 |---|---|---|---|---|
 | 0 | Foundations | done | 2026-10-25 | 0 |
-| 1 | Scaffold and infrastructure | not started | | |
+| 1 | Scaffold and infrastructure | done | 2026-10-25 | 0 |
 | 2 | Security core | not started | | |
 | 3 | LLM wrapper and resilience | not started | | |
 | 4 | Analysis subgraph | not started | | |
@@ -67,3 +67,36 @@ Stage log for `docs/implementation-plan.md`. Every stage updates this file (plan
 - Verified with sqlglot 30.24.0 and google-cloud-bigquery 3.46.2. `db-dtypes` is needed for `to_dataframe()`.
 - `bq` catalog drift test: compare the `content/catalog.yaml` columns and types with `get_table_schema()` of each base table. All catalog columns exist with matching types on 2026-10-25.
 - BigQuery bills at least 10 MiB per referenced table, and a scoped query bills ~40 MiB (facts §2). Keep `bq` tests few.
+
+---
+
+## Stage 1 — Scaffold and infrastructure
+
+### What was done
+- **Package skeleton** `src/retail_agent/` per plan §4 (`pyproject.toml`, setuptools, editable install via `-e .` in `requirements.txt`). Stub modules carry the contract signatures and raise `NotImplementedError`. Pure data (dataclasses, enums, pydantic models, error classes, `UiEvent`s, `ClassifyOutput`, `AnalysisOutput`, `AgentState`) is already real, so later stages import it instead of redefining it. Seams (`load_user_preferences`, `retrieve_golden_examples`) return `[]`. Stub scripts in `scripts/`.
+- **`requirements.txt`** pinned to the versions installed on 2026-10-25 (Python 3.12). A fresh venv installs it and `import retail_agent` works. `langchain-anthropic` is left out (deviation 10 of Stage 0).
+- **`config.py`**: `load_settings` (profile from `LLM_PROFILE`, env overrides of contracts §1.2, `.env` loaded only when `env is None`, readable `ConfigError` naming key and file), `require_api_key` (placeholders count as missing), `load_catalog` with `Catalog.schema_prompt()` / `compact_prompt()` / `allowed_columns()`, `load_text`. Extra fallbacks are appended to a role chain only when the provider key is present.
+- **`tracing.py`**: `Tracer` / `NullTracer` / `read_traces`, the helpers `security_event`, `pii_in_input`, `feedback`, `turn_summary`, secret redaction (values ≥ 8 chars), truncation with the `truncated` flag, and `validate_record` for the contract schema.
+- **`bq_client.py`** moved into the package with `execute_query` / `get_table_schema` untouched. Added `dry_run`, `run_query` (parameters, `maximum_bytes_billed`, client timeout plus server `job_timeout_ms`, labels), the typed errors, `to_query_parameters`, `sanitize_labels`, `create_runner`.
+- **Tests**: 63 offline tests (config, catalog, tracing, bq client with a fake google client, scaffold imports) and 3 `bq` tests (`dry_run`, `run_query` with cap and cache-proof cap breach, catalog drift against `get_table_schema()`). `conftest.py` has the fixtures `settings`, `catalog`, `fake_tracer`, `tmp_data_dir` and skips `bq` / `llm` tests when credentials are missing.
+
+### Deviations and questions
+1. **`create_runner(settings)` and `validate_record()`** are additions to contracts §1.3 / §1.4 (documented there). The first is where the "missing `GOOGLE_CLOUD_PROJECT` becomes a `ConfigError`" rule lives.
+2. **`UiEvent` classes live in `agent/state.py`** (contracts §6.1 does not name a module); `llm/wrapper.py` imports them only under `TYPE_CHECKING`.
+3. **Tracer validation.** `write()` rejects unknown event names, security kinds and turn outcomes with `ValueError`, so a typo fails in tests rather than producing an off-schema trace.
+4. **Catalog drift test maps legacy type names** (`INTEGER`→`INT64`, `FLOAT`→`FLOAT64`, `BOOLEAN`→`BOOL`), because `get_table_schema()` returns the REST names.
+5. **`.gitignore`** gained `*.egg-info/`.
+
+### Known issues
+- `BigQueryRunner._map_error` classifies a bytes-cap breach by message text (`bytesBilledLimitExceeded` / "bytes billed"). The real error was confirmed with a live breach in the `bq` test, but a change of BigQuery's wording would turn it into `BigQueryBadRequestError`.
+- A cached BigQuery result bills 0 bytes and ignores `maximum_bytes_billed`; `COUNT(*)` without a filter is also free. Both only matter for tests that try to breach the cap.
+- ADC prints a "no quota project" warning during `bq` tests; it is harmless.
+
+### Notes for Stage 2
+- Use `create_runner(settings)` to get a runner; `dry_run()` returns `ok=False` for bad SQL instead of raising.
+- `Catalog.table.filter` holds the predicate text of each CTE (including the future-date filter on `order_items`); the CTE builder should read it from there.
+- `Tracer.security_event(kind, reason_code, **detail)` accepts only the kinds in contracts §1.3.
+- Run `bq` tests with `set -a; . ./.env; set +a; .venv/bin/python -m pytest -m bq`. gcloud needs `CLOUDSDK_PYTHON` as in the Stage 0 notes.
+
+### Usage
+- Live LLM calls: 0. BigQuery: a handful of dry runs and small queries from the `bq` tests (each bills ~10 MiB per referenced table; the cap-breach query bills nothing).
