@@ -9,9 +9,9 @@ Stage log for `docs/implementation-plan.md`. Every stage updates this file (plan
 | 2 | Security core | done | 2026-10-25 | 0 |
 | 3 | LLM wrapper and resilience | done | 2026-10-25 | 1 |
 | 4 | Analysis subgraph | done | 2026-10-25 | 6 |
-| 5 | Conversation graph | not started | | |
-| 6 | Saved reports and deletion | not started | | |
-| 7 | CLI | not started | | |
+| 5 | Conversation graph | done | 2026-10-25 | 5 |
+| 6 | Saved reports and deletion | done | 2026-10-25 | 0 |
+| 7 | CLI | done | 2026-10-25 | 10 |
 | 8 | Observability and eval tooling | not started | | |
 | 9 | README and example run | not started | | |
 | 10 | Independent review | not started | | |
@@ -275,3 +275,28 @@ Stage log for `docs/implementation-plan.md`. Every stage updates this file (plan
 ### Usage
 - Live LLM calls: 0 (all behaviour tested with fakes).
 
+---
+
+## Stage 7 — CLI
+
+### What was done
+- **`cli/app.py`**: `parse_command`, `Command`, `Session` (the loop, testable with an injected reader and console), `build_app` (wires `Deps` from `config.yaml` and `content/`), `main` (`--exec`, `--profile`). Rendering with `rich`: summary first, findings and actions as tables, definitions and limitations as lists, report tables for lists and confirmations.
+- **Commands** as in DD §6. An unknown command prints help. `/login` and `/new` go through `AgentApp`, which clears a pending delete. `/resume` of a foreign or unknown thread prints "Thread not found." The CLI writes `session` trace records (login, new, resume, quit).
+- **No login, no request:** a question typed before `/login` never reaches the agent; the CLI asks for `/login <exec_id>`. `AgentApp.send` refuses too (defence in depth).
+- **Confirmation:** the prompt and the report table are printed, and the next line is the answer (the facade resumes the interrupt). Only `confirm` deletes.
+- **Errors:** `ErrorEvent` messages (quota, data source, generic, each with `thread_id`) are printed in red and the loop continues. Any exception escaping `send` is mapped with `error_for`.
+- **No TTY:** plain output, input lines echoed, one `... step` line per progress event, no spinner.
+- **Tests:** `tests/test_cli.py` (offline): command parsing, a piped session against fakes (login, question, foreign `/resume`, save, delete with `confirm`, trace, feedback), cancelled delete, login clears a pending delete, quota error and continued loop.
+
+### Deviations and questions
+None.
+
+### Known issues
+- Third-party `FutureWarning`/`UserWarning` lines (google-auth, langchain-google-genai) appear on stderr at start and during calls.
+- Ctrl-C during a turn prints "Turn interrupted." and the loop continues; the thread state is whatever the last completed node committed.
+
+### Notes for Stage 8
+- Traces from a real session are in `logs/traces.jsonl` (CEO and brand_manager_1 asking the same question, thread ids in the file).
+
+### Usage
+- Live LLM calls: 10 (manual free-profile session: CEO and `brand_manager_1`, the same monthly sales question; totals $1,233,212 vs $62,107, so scoping differs).
