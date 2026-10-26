@@ -10,6 +10,7 @@ import logging
 import os
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable, Iterator, Literal, Sequence, TextIO
 
 from rich.console import Console
@@ -38,6 +39,7 @@ HELP = ("Commands: /login <exec_id> · /new · /resume <thread_id> · /trace · 
         "Everything else is a question; listing or deleting saved reports is also asked in plain words.")
 THREAD_NOT_FOUND = "Thread not found."
 SECRET_ENV_VARS = ("GOOGLE_API_KEY", "ANTHROPIC_API_KEY")
+ERROR_LOG_NAME = "agent.log"   # written next to the trace file (logs/, git-ignored)
 
 
 @dataclass(frozen=True)
@@ -214,7 +216,8 @@ class Session:
                 self.say(THREAD_NOT_FOUND)
         elif cmd.name == "trace":
             thread_id, path = app.trace_info()
-            self.say(f"thread_id: {thread_id or '(none yet)'}\ntrace log: {path}")
+            self.say(f"thread_id: {thread_id or '(none yet)'}\ntrace log: {path}\n"
+                     f"error log: {path.parent / ERROR_LOG_NAME}")
         elif cmd.name == "feedback":
             rating = cmd.args[0].lower() if cmd.args else ""
             if rating not in ("good", "bad"):
@@ -295,6 +298,24 @@ def build_app(settings: Settings) -> AgentApp:
     return AgentApp(deps, make_checkpointer(settings))
 
 
+def configure_logging(settings: Settings) -> Path | None:
+    """Diagnostics go to logs/agent.log, never into the chat.
+
+    A failed turn shows the user one short message with its thread ID; the traceback is written
+    to this file, next to the trace log, where the thread ID finds it. Returns the file, or None
+    if it cannot be opened (logging is then dropped rather than printed into the chat)."""
+    path = settings.paths.traces.parent / ERROR_LOG_NAME
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handler = logging.FileHandler(path, encoding="utf-8")
+    except OSError:
+        logging.basicConfig(level=logging.WARNING, handlers=[logging.NullHandler()])
+        return None
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    logging.basicConfig(level=logging.WARNING, handlers=[handler])
+    return path
+
+
 def _make_reader(stdin: TextIO, console: Console, interactive: bool) -> Callable[[str], str | None]:
     if interactive:
         return lambda prompt: console.input(prompt)
@@ -312,12 +333,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.profile:
         os.environ["LLM_PROFILE"] = args.profile
-    logging.basicConfig(level=logging.WARNING)
 
     interactive = sys.stdin.isatty() and sys.stdout.isatty()
     console = Console(force_terminal=None if interactive else False)
     try:
-        app = build_app(load_settings())
+        settings = load_settings()
+        configure_logging(settings)
+        app = build_app(settings)
     except ConfigError as exc:
         console.print(f"Configuration problem: {exc}", markup=False)
         return 2

@@ -1,0 +1,43 @@
+%%{init: {"flowchart": {"defaultRenderer": "elk"}}}%%
+flowchart TB
+    USERS[Executives · CEO · admins · analysts<br/>browser]
+    LB[Global HTTPS Load Balancer<br/>Cloud Armor: WAF, per-user rate limits]
+    IDP[Google Workspace SSO<br/>OIDC / OAuth 2.0]
+
+    subgraph FE[Front ends · Cloud Run · 2 regions]
+        WEB[Chat web app + API<br/>SPA + BFF, SSE streaming]
+        ADM[Admin app<br/>persona · entitlements · golden review]
+    end
+
+    AG[Agent service · Cloud Run · 2 regions<br/>LangGraph · internal ingress only]
+
+    PS[[Pub/Sub<br/>conversation events]]
+    JOBS[Background jobs · Cloud Run Jobs<br/>memory extractor · golden ingestion and candidate miner]
+
+    subgraph PERIM[VPC Service Controls perimeter]
+        AI[Vertex AI<br/>Gemini models + Claude fallback<br/>embeddings]
+        BQ[(BigQuery<br/>authorized views: no PII columns,<br/>brand scope from entitlements table)]
+        PG[(Cloud SQL Postgres + pgvector · HA + DR replica<br/>agent schema: threads · reports · memory<br/>admin schema: persona versions · golden index)]
+        GCS[(Cloud Storage<br/>Golden Bucket: analyst trios)]
+    end
+
+    subgraph OBS[Observability]
+        LS[LangSmith SaaS<br/>LLM traces · evals · online scoring]
+        DD[Cloud Logging → Datadog<br/>dashboards · alerts · on-call]
+    end
+
+    USERS --> LB --> FE
+    FE -. SSO .-> IDP
+    WEB -->|HTTPS + SSE, executive's token| AG
+    AG -->|SQL as the executive| BQ
+    AG -->|LLM, embeddings| AI
+    AG -->|state, reports, memory,<br/>golden retrieval: hybrid search| PG
+    AG -->|conversation ended, feedback| PS
+    ADM -->|persona, golden approval| PG
+    ADM -->|entitlements| BQ
+    PS --> JOBS
+    GCS --> JOBS
+    JOBS -->|enrichment, embeddings| AI
+    JOBS -->|memory, golden candidates| PG
+    AG -. traces .-> LS
+    FE -. logs, metrics .-> DD

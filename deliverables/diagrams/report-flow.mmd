@@ -1,0 +1,39 @@
+sequenceDiagram
+    autonumber
+    actor E as Executive
+    participant W as Web app + API
+    participant A as Agent service
+    participant P as Postgres
+    participant V as Vertex AI
+    participant B as BigQuery (views + RLS)
+
+    E->>W: "Create a Q1 report with action items for Q2"
+    W->>A: POST /turn (thread_id, message, executive's token) · SSE stream opens
+    A->>P: load checkpoint + session snapshot (agent schema)
+    A->>V: rewrite + classify (cheap model)
+    V-->>A: intent = report_generation
+    A->>P: retrieve_golden: hybrid search, admin schema read-only (pgvector + FTS, RRF)
+    P-->>A: top 2–3 trios above floors
+    A-->>W: progress: "Planning the report"
+    loop until done, budget 10 tool calls, deadline 150 s
+        A->>V: agent step (expensive model)
+        V-->>A: tool call run_sql(sql)
+        A->>A: validator (AST) · dry-run · bytes cap
+        A->>B: query as the executive
+        B-->>A: rows (only in-scope brands, no PII columns)
+        A-->>W: progress: "Querying data (n/10)"
+    end
+    A->>V: final_answer (structured)
+    V-->>A: definitions · findings · limitations · action items · summary · entities · title
+    A->>A: output_guard: PII scan, every action item linked to a finding
+    A->>P: checkpoint: last_answer, history (question + answer)
+    A-->>W: final answer
+    W-->>E: rendered report (summary first, tables)
+
+    E->>W: "Save this report"
+    W->>A: POST /turn
+    A->>V: classify (cheap model)
+    V-->>A: intent = report_library, action = save
+    A->>P: INSERT reports (owner, thread, content_json, entities, search_text) · no LLM for content
+    A-->>W: "Saved: Q1 2026 performance report"
+    W-->>E: confirmation

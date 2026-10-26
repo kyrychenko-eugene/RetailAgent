@@ -1,0 +1,32 @@
+sequenceDiagram
+    autonumber
+    actor E as Executive
+    participant W as Web app + API
+    participant A as Agent service
+    participant V as Vertex AI
+    participant P as Postgres (agent schema)
+
+    E->>W: "Delete all reports mentioning Diesel"
+    W->>A: POST /turn
+    A->>V: classify (cheap model)
+    V-->>A: report_library · delete · scope = entity · "Diesel"
+    A->>P: owner's reports (id, title, description, entities)
+    A->>V: select matching reports (cheap model)
+    V-->>A: report IDs + search terms
+    A->>P: full-text match of terms over search_text (owner only)
+    A->>A: union of both lists ∩ owner's IDs → snapshot of exact IDs
+    A->>P: checkpoint: pending delete (snapshot) · interrupt
+    A-->>W: confirmation request: list of 3 reports
+    W-->>E: "3 reports will be permanently deleted" + list
+
+    alt executive confirms
+        E->>W: confirm
+        W->>A: POST /turn (resumes the interrupt)
+        A->>P: one transaction: DELETE id IN snapshot AND owner = executive · INSERT audit_log (who, when, IDs, count)
+        A-->>W: "3 reports deleted"
+    else anything else
+        E->>W: any other message
+        W->>A: POST /turn
+        A->>P: clear pending delete
+        A-->>W: "Deletion cancelled." + the message answered as a normal turn
+    end

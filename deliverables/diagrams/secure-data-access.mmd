@@ -1,0 +1,37 @@
+flowchart TB
+    EX[Executive · signed in with SSO<br/>OAuth token with BigQuery scope]
+
+    subgraph L1[Layer 1 · input · agent service]
+        direction LR
+        M[mask_input<br/>email · phone · card → placeholders<br/>before any LLM call or log]
+        C[classify<br/>malicious / off-topic → canned refusal<br/>+ security event]
+    end
+
+    subgraph L2[Layer 2 · prompt · soft]
+        direction LR
+        P[safety rules first · schema of the views only<br/>no PII columns, no base tables in context]
+    end
+
+    subgraph L3[Layer 3 · query guard · agent service, code]
+        direction LR
+        V[AST validator<br/>one SELECT · views only · no DML/DDL/scripting<br/>quasi-identifier rule · brand literal check]
+        D[dry-run<br/>bytes estimate · maximum_bytes_billed]
+    end
+
+    subgraph L4[Layer 4 · BigQuery · runs as the executive]
+        direction LR
+        IAM[IAM<br/>Data Viewer on the secure views dataset only<br/>no access to raw tables]
+        AV[authorized views<br/>PII columns do not exist]
+        RLS[brand scope inside the views<br/>brand IN entitlements of SESSION_USER<br/>CEO: scope_all row]
+    end
+
+    subgraph L5[Layer 5 · output · agent service, code]
+        direction LR
+        S[PII pattern scan<br/>rows before the LLM · final answer]
+        OW[ownership checks<br/>threads and reports filtered by owner]
+    end
+
+    EX --> M --> C --> P --> V --> D --> IAM
+    IAM --> AV --> RLS
+    RLS -->|rows| S --> OW
+    OW --> ANS[answer]

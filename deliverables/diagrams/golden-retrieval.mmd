@@ -1,0 +1,10 @@
+flowchart LR
+    Q[rewritten question] --> QE[embed · Vertex AI]
+    QE --> DS[dense search · pgvector<br/>keep only above cosine floor]
+    Q --> SS[full-text search · tsvector<br/>keep only above match floor]
+    DS --> RRF[weighted RRF]
+    SS --> RRF
+    RRF --> TOP{is there any result?}
+    TOP -->|yes| K[top k<br/>1 for analysis · 2–3 for report] --> PR[analysis prompt<br/>question · SQL · interpretation note]
+    TOP -->|no| NONE[no example<br/>glossary and patterns only]
+    QE -. embedding fails: full-text only .-> RRF

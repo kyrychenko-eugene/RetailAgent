@@ -1,0 +1,16 @@
+%%{init: {"flowchart": {"defaultRenderer": "elk"}}}%%
+flowchart TB
+    AN[Analysts<br/>question · SQL · report] --> GCS[(Cloud Storage<br/>raw trio files)]
+    GCS -->|new file · Pub/Sub| ING[ingest job]
+    CV[Agent conversations] --> LS[LangSmith<br/>online-eval score · feedback]
+    LS -->|nightly · high score, positive feedback, no errors| MIN[candidate miner job]
+
+    ING --> VAL
+    MIN --> VAL
+    VAL[validate SQL<br/>dry-run + run on the views] --> ANO[anonymise<br/>brands → BRAND_n · PII masked]
+    ANO --> DED[find near-duplicates<br/>link to existing trio] --> ENR[enrich · LLM<br/>interpretation note + tags<br/>no numbers]
+    ENR --> CAND[(candidates<br/>pending)]
+    CAND --> REV{admin review in admin app<br/>near-duplicates shown side by side}
+    REV -->|approve| EMB[embed + full-text index] --> IDX[(golden trios<br/>pgvector HNSW · tsvector)]
+    REV -->|reject| X[discarded<br/>reason kept]
+    NIGHT[nightly validity job<br/>dry-run every trio] -->|broken → stale,<br/>excluded, flagged in admin app| IDX

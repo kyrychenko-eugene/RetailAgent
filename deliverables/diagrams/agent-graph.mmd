@@ -1,0 +1,44 @@
+%%{init: {"flowchart": {"defaultRenderer": "elk"}}}%%
+flowchart TB
+    START((message)) --> CTX[load_context<br/>session snapshot from login: scope · user memory<br/>persona pinned per conversation]
+    CTX --> MASK[mask_input<br/>regex: email · phone · card<br/>code, no LLM]
+    MASK --> H{history?}
+    H -- yes --> RW[rewrite<br/>cheap LLM: standalone question]
+    H -- no --> CL
+    RW --> CL[classify<br/>cheap LLM, structured output:<br/>intent · reason · overrides · library action]
+
+    CL -->|analysis / report_generation| GR[retrieve_golden<br/>embed + hybrid search, floors, RRF<br/>k=1 analysis · k=2–3 report]
+    CL -->|schema_question| SQ[schema_answer<br/>cheap LLM over catalog + scope]
+    CL -->|report_library| RL[report_library<br/>save · list · find matches]
+    CL -->|clarify| CQ[ask clarification]
+    CL -->|unanswerable| UA[no such data + what exists]
+    CL -->|off_topic / malicious| RF[canned refusal<br/>no LLM · security event]
+
+    subgraph AN[analysis subgraph · LangGraph ReAct · expensive LLM]
+        direction TB
+        AGT[agent step<br/>prompt: safety → preferences → persona<br/>glossary · catalog · golden example]
+        TOOLS[tools<br/>run_sql · get_column_values<br/>validator → dry-run → BigQuery as the executive]
+        FIN[final_answer<br/>structured: definitions · findings ·<br/>limitations · actions · summary]
+        AGT --> BD{tool call, and<br/>budget + deadline left?}
+        BD -->|yes| TOOLS
+        TOOLS -->|rows or error text<br/>self-correction| AGT
+        BD -->|no: done, or budget / deadline hit| FIN
+    end
+
+    GR --> AGT
+    FIN --> OG[output_guard<br/>PII scan · finding/action links<br/>code, no LLM]
+
+    RL -->|delete requested| CD[[confirm_delete<br/>interrupt: exact list, type 'confirm']]
+    CD -->|confirm| DEL[delete snapshot IDs<br/>+ audit row, one transaction]
+    CD -->|anything else| CAN[cancel pending delete]
+    CAN -->|same message, as a new turn| H
+
+    OG --> FZ
+    SQ --> FZ
+    RL -->|save / list| FZ
+    CQ --> FZ
+    UA --> FZ
+    RF --> FZ
+    DEL --> FZ
+    FZ[finalize<br/>history: question + answer only<br/>stream answer · publish turn event]
+    FZ --> END((reply))
