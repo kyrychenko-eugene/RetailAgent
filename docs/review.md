@@ -324,13 +324,45 @@ The core purpose: answer varied questions from **non-technical executives** and 
   - Suggested fix: add an optional `tables: [{title, columns, rows, query_id}]` field (rows taken from a query of the turn, capped), rendered by the CLI. Or tell the prompt to list every requested item in the findings.
 - B08 failed only because of the runner crash, now fixed.
 
-### 8.4 Live runs still to do
+### 8.4 Live results of the most important new cases (free profile, 2026-10-26)
 
-| Run | Approx. live LLM calls (free profile) |
+To save quota, only the cases that test the core purpose were run: the new routing cases, the two key dialogues, and five golden cases for the CEO. About 115 live calls.
+
+| Run | Result |
 |---|---|
-| Routing eval, 58 cases (12 with a rewrite) | ~70 |
-| Smoke SM-08 to SM-12 | ~75 |
-| Golden business, CEO, new and re-checked cases (B06–B08, B11, B16–B26) | ~75 |
-| Golden business, both brand managers, all 26 | ~260 |
+| Routing R39–R58 (8 plain-language, 12 follow-ups) | **20/20 routed correctly**, 0 % false refusals. Override extracted 1/1. **Follow-up rewrites kept the context in 9/11.** R55 ("turn all this into a short report…") and R58 ("how often do they buy?") came back unchanged. |
+| Smoke SM-08 (8-turn plain-language conversation) | 22/27 assertions. Turns 1–5 and 8 pass: vague opener, best brand, "why is that one ahead", women's side, "as a table", save. **Turn 6 "is that good or bad?" was refused as `off_topic`** (N2). Turn 7 (report) failed with a `deadline` error caused by the eval throttle, not the agent (N3). |
+| Smoke SM-08b (SM-08 turns 2, 3 and 7, no throttle) | **PASS** 10/10. The report was built from the conversation: the rewrite carried Diesel, Carhartt, Tommy Hilfiger and the Jeans driver, and 2 action items cite this turn's figures. |
+| Smoke SM-10 (60-day override across turns) | **PASS** 10/10. 60 days stated on turns 1–2, back to 90 days on request. |
+| Golden B06 "Why did churn spike?" (CEO) | **PASS**: says there was no spike (reference: 27.4 % vs 30.1 % the month before); key numbers match. |
+| Golden B17 "Are we selling more this year than last year?" | **PASS**: year to date vs the same period last year, both numbers match. |
+| Golden B22 60-day churn override | **PASS**: override applied (43.0 %) and stated. |
+| Golden B23 product weight | **PASS**: `cannot_answer`, no invented numbers, 1 LLM call. |
+| Golden B26 "How are we doing?" | **PASS**: a useful overview with stated definitions. |
 
-About 290 live calls were already used on 2026-10-26, so the larger runs may hit the free-tier daily quota.
+Not run: routing R01–R38 (ran earlier today, 97 %), SM-09, SM-11, SM-12, golden B16, B18–B21, B24, B25, and every case for the brand managers.
+
+### 8.5 New findings from these runs
+
+- **N2 (high for the conversation requirement). Short referential follow-ups can lose their context and get refused.**
+  - Evidence: SM-08 turn 6 "is that good or bad?". The rewrite returned the text unchanged. Classify, which sees no history, routed it `off_topic` and the user got the canned refusal mid-conversation. R55 and R58 show the same unchanged rewrite. R50 ("is that bad?") rewrote correctly, so the failure is intermittent.
+  - Cause: the rewrite prompt says "If the message is already standalone, return it unchanged", and Flash-Lite judges pronoun-only follow-ups as standalone. Classify then has no context.
+  - Suggested fix (Stage 11):
+    - (a) in `content/prompts/rewrite.md`, state that a message containing "that / this / it / they / them / all this", or an evaluative question ("is that good?"), always refers to the previous turns and must be rewritten;
+    - (b) deterministic guard in `classify_node`: when history exists and classify returns `off_topic` for a message the rewrite left unchanged, route to `analysis` instead (it sees the history and can answer or ask).
+  - Add SM-08 turn 6 and R55/R58 as regression cases (already in the files).
+- **N3 (low, eval harness). The `--rpm` throttle can eat the turn deadline.** `scripts/_common.throttle_llm` sleeps inside `call_llm`, after the turn's deadline has started. A 33 s throttle wait before `rewrite` used up the 30 s pre-routing deadline (SM-08 turn 7: `error_type=deadline`, 0 LLM calls). Fix: throttle at the turn boundary in `run_turn` (wait until the window has room for the turn's typical calls), or skip the throttle for the first call of a turn.
+- **N1** (§8.3: list and series answers cut to one or two numbers) stays the main answer-quality gap. B01 and B11 should be re-run after the fix.
+
+### 8.6 Verdict on the core purpose
+
+The agent does answer varied questions from non-technical executives:
+- plain, vague and colloquial wording is routed correctly (0 false refusals in 58 routing cases);
+- numbers match live reference SQL in 17 of 20 golden runs;
+- it is honest about no spike, unanswerable attributes and partial periods;
+- definitions and overrides are stated and kept across turns;
+- multi-turn follow-ups (pronouns, "why", drill-down, reformat, report from the conversation) mostly work.
+
+It is **not yet complete** on two points, both for Stage 11:
+1. **N1:** "list" and "show me the series" questions return only the top or end values.
+2. **N2:** a short evaluative follow-up can be refused mid-conversation.

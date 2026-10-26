@@ -14,7 +14,7 @@ Stage log for `docs/implementation-plan.md`. Every stage updates this file (plan
 | 7 | CLI | done | 2026-10-25 | 10 |
 | 8 | Observability and eval tooling | done | 2026-10-25 | about 190 |
 | 9 | README and example run | done | 2026-10-25 | 43 |
-| 10 | Independent review | done | 2026-10-26 | about 142 |
+| 10 | Independent review | done | 2026-10-26 | about 330 |
 | 11 | Fixes | not started | | |
 
 ---
@@ -408,3 +408,18 @@ None.
   - routing eval: 38;
   - smoke SM-01: 9; SM-02: 11.
 - BigQuery: `pytest -m bq`, about 30 MB from the red-team sessions, 3 probe executions (~10 MB each), the smoke runs, and ~25 free dry-runs.
+
+### Follow-up: coverage of the core purpose (same day, at the user's request)
+- The evals were extended to cover conversation and plain-language questions (`docs/review.md` §8):
+  - routing 38 → 58 cases, with rewrite and override scoring;
+  - smoke 7 → 12 dialogues, with five new assertion types;
+  - golden 15 → 26 business cases, with deterministic `checks` and a definitions check;
+  - `run_golden.py --category` added, and its crash on B08 fixed.
+- **Deviation:** the reviewer changed eval files, eval scripts and `tests/test_eval_tools.py` (not agent code), at the user's request. AGENTS.md allows new tests and fixes of clear bugs.
+- **New findings:** N1 (list answers cut short), N2 (short follow-ups refused after an unchanged rewrite), N3 (eval throttle eats the turn deadline).
+- **Live LLM calls in the follow-up:** about 190.
+  - CEO golden B01–B15: 73;
+  - routing R39–R58: 32;
+  - SM-08: 32; SM-10: 11; SM-08b: 22;
+  - golden B06, B17, B22, B23, B26: 18.
+  - Stage 10 total: about 330.
