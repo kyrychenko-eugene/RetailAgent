@@ -1,8 +1,10 @@
 """Structured analysis output (contracts §4.2). Models are real; check_output/render are Stage 4."""
 from __future__ import annotations
 
+import datetime as _dt
 from dataclasses import dataclass
-from typing import Literal
+from decimal import Decimal
+from typing import Any, Literal, Mapping, Sequence
 
 from pydantic import BaseModel
 
@@ -18,10 +20,21 @@ class ActionItem(BaseModel):
     finding_id: str
 
 
+class ResultTable(BaseModel):
+    """Rows of one query of the turn, shown as a table. The model names the query; code fills
+    `columns` and `rows` from that query's result, so table values are never model-written."""
+    title: str
+    query_id: str
+    columns: list[str] = []
+    rows: list[list[Any]] = []
+    total_rows: int | None = None      # rows the query returned; more than len(rows) when cut
+
+
 class AnalysisOutput(BaseModel):
     outcome: Literal["answer", "cannot_answer", "clarification"]
     definitions_used: list[str]
     findings: list[Finding]
+    tables: list[ResultTable] = []
     limitations: list[str]
     action_items: list[ActionItem]
     summary: str
@@ -61,6 +74,14 @@ def check_output(out: AnalysisOutput, *, executed_query_ids: set[str],
                 limitations.append(f"Finding {f.id} has no supporting query result; treat it with caution.")
         findings.append(f.model_copy(update={"query_ids": valid}))
 
+    tables = []
+    for t in out.tables:
+        if t.query_id in executed_query_ids:
+            tables.append(t)
+        else:
+            problems.append(f"Table '{t.title}' refers to query {t.query_id}, which returned no result")
+            limitations.append(f"A table that referred to a query without a result ({t.query_id}) was removed.")
+
     finding_ids = {f.id for f in findings}
     actions = []
     for item in out.action_items:
@@ -80,7 +101,7 @@ def check_output(out: AnalysisOutput, *, executed_query_ids: set[str],
         limitations.append("No action items could be derived from the findings.")
 
     fixed = out.model_copy(update={
-        "outcome": outcome, "findings": findings, "action_items": actions,
+        "outcome": outcome, "findings": findings, "tables": tables, "action_items": actions,
         "limitations": list(dict.fromkeys(limitations)),
         "title": _clip(out.title, TITLE_MAX), "description": _clip(out.description, DESCRIPTION_MAX),
         "clarification_question": question if outcome == "clarification" else None,
@@ -88,8 +109,57 @@ def check_output(out: AnalysisOutput, *, executed_query_ids: set[str],
     return fixed, problems
 
 
-def render_markdown(out: AnalysisOutput) -> str:
-    """Summary first, then findings, action items, definitions and limitations."""
+def _cell(value: Any) -> Any:
+    """A JSON-safe cell: numbers, strings, booleans and None stay; dates and decimals are converted."""
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, (_dt.date, _dt.datetime, _dt.time)):
+        return value.isoformat()
+    return str(value)
+
+
+def attach_tables(out: AnalysisOutput, results: Mapping[str, tuple[Sequence[str], Sequence[Mapping[str, Any]]]],
+                  *, max_rows: int) -> AnalysisOutput:
+    """Fill every table from the result of the query it names: {query_id: (columns, rows)}.
+    Tables naming a query without a result are dropped (check_output already noted them)."""
+    tables = []
+    for t in out.tables:
+        if t.query_id not in results:
+            continue
+        columns, rows = results[t.query_id]
+        tables.append(t.model_copy(update={
+            "columns": list(columns),
+            "rows": [[_cell(r.get(c)) for c in columns] for r in rows[:max_rows]],
+            "total_rows": len(rows)}))
+    return out.model_copy(update={"tables": tables})
+
+
+def format_cell(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, float):
+        return f"{value:,.2f}"
+    if isinstance(value, int) and not isinstance(value, bool):
+        return f"{value:,}"
+    return str(value).replace("|", "/")
+
+
+def table_markdown(t: ResultTable, max_rows: int | None = None) -> str:
+    rows = t.rows if max_rows is None else t.rows[:max_rows]
+    lines = [f"**{t.title}** ({t.query_id})", "| " + " | ".join(t.columns) + " |",
+             "|" + "---|" * len(t.columns)]
+    lines += ["| " + " | ".join(format_cell(v) for v in row) + " |" for row in rows]
+    hidden = (t.total_rows or len(t.rows)) - len(rows)
+    if hidden > 0:
+        lines.append(f"({hidden} more row{'s' if hidden != 1 else ''} not shown)")
+    return "\n".join(lines)
+
+
+def render_markdown(out: AnalysisOutput, *, max_table_rows: int | None = None) -> str:
+    """Summary first, then findings, tables, action items, definitions and limitations.
+    `max_table_rows` shortens tables (conversation history keeps prompts bounded, DD §5.1)."""
     if out.outcome == "clarification" and out.clarification_question:
         return out.clarification_question
     parts = [out.summary.strip()]
@@ -99,6 +169,9 @@ def render_markdown(out: AnalysisOutput) -> str:
             refs = f" ({', '.join(f.query_ids)})" if f.query_ids else ""
             lines.append(f"- **{f.id}.** {f.statement}{refs}")
         parts.append("**Findings**\n" + "\n".join(lines))
+    for t in out.tables:
+        if t.columns:
+            parts.append(table_markdown(t, max_table_rows))
     if out.action_items:
         parts.append("**Recommended actions**\n" + "\n".join(
             f"- {a.action} (based on {a.finding_id})" for a in out.action_items))

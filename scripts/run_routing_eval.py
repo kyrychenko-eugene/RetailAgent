@@ -25,7 +25,9 @@ from typing import Sequence
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from _common import throttle_llm, EVAL_DIR, load_routing_set, table
-from retail_agent.agent.nodes import _NO_CLARIFY, _REWRITE_MAX_CHARS, ClassifyOutput, validate_classification
+from retail_agent.agent.nodes import (
+    _NO_CLARIFY, _REWRITE_MAX_CHARS, ClassifyOutput, is_follow_up, validate_classification,
+)
 from retail_agent.agent.prompt_assembly import history_block, load_prompt, render
 from retail_agent.llm.wrapper import message_text
 from retail_agent.config import ConfigError, Settings, load_catalog, load_settings
@@ -45,7 +47,7 @@ def make_classifier(settings: Settings, llm: LLMClient, catalog):
     compact = catalog.compact_prompt()
     turn = settings.turn
 
-    def classify(message: str) -> ClassifyOutput:
+    def classify(message: str, *, follow_up: bool = False) -> ClassifyOutput:
         ctx = TurnContext(thread_id="routing-eval", turn_id="routing-eval", exec_id="eval", intent=None,
                           deadline=Deadline(settings.llm.call_timeout_s * 3), synthesis_reserve_s=0.0,
                           budget=TurnBudget(0), tracer=NullTracer())
@@ -53,7 +55,7 @@ def make_classifier(settings: Settings, llm: LLMClient, catalog):
                         can_clarify="" if turn.max_consecutive_clarifications > 0 else _NO_CLARIFY)
         result = llm.call_llm("cheap", [safety, HumanMessage(prompt)], ctx, node="classify", schema=ClassifyOutput)
         return validate_classification(result.parsed, message, consecutive_clarifications=0,
-                                       max_clarifications=turn.max_consecutive_clarifications)
+                                       max_clarifications=turn.max_consecutive_clarifications, follow_up=follow_up)
     return classify
 
 
@@ -198,7 +200,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     for i, case in enumerate(cases, 1):
         try:
             question = rewrite(case["history"], case["message"]) if case.get("history") else case["message"]
-            out = classify(question)
+            out = classify(question, follow_up=is_follow_up(case["message"], case.get("history") or []))
             results.append({"intent": out.intent, "library_action": out.library_action,
                             "delete_scope": out.delete_scope, "rewritten": question if case.get("history") else None,
                             "overrides": {o.name: o.value for o in out.overrides}})

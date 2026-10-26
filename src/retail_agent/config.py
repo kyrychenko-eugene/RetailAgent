@@ -47,6 +47,8 @@ class TurnSettings:
     history_turns: int
     max_consecutive_clarifications: int
     pii_attempts_before_stop: int
+    table_rows: int = 50                # rows of a result table shown and saved (config: turn.table_rows)
+    history_table_rows: int = 10        # rows of a table kept in conversation history
 
     def deadline_for(self, intent: str) -> float:
         return self.deadline_s.get(intent, self.deadline_s["default"])
@@ -233,6 +235,8 @@ def load_settings(path: Path | None = None, env: Mapping[str, str] | None = None
         history_turns=r.integer("turn.history_turns"),
         max_consecutive_clarifications=r.integer("turn.max_consecutive_clarifications"),
         pii_attempts_before_stop=r.integer("turn.pii_attempts_before_stop"),
+        table_rows=r.integer("turn.table_rows"),
+        history_table_rows=r.integer("turn.history_table_rows"),
     )
 
     bytes_cap_raw = _env_value(env, "RA_BYTES_CAP")

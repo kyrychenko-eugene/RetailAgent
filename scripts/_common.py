@@ -211,6 +211,9 @@ def run_turn(app, text: str) -> TurnResult:
     from retail_agent.analysis.output import render_markdown
     from retail_agent.tracing import read_traces
 
+    wait = getattr(app.deps.llm, "wait_for_turn", None)
+    if wait is not None:     # throttle between turns, outside the turn deadline
+        wait()
     path = app.deps.settings.paths.traces
     before = sum(1 for _ in read_traces(path))
     events = list(app.send(text))
@@ -247,9 +250,15 @@ def build_eval_app(*, prefix: str):
     return build_app(settings), work
 
 
+TURN_HEADROOM = 6     # calls a turn may make without waiting inside it (rewrite, classify, first analysis steps)
+
+
 def throttle_llm(llm, rpm: int, *, clock=None, sleep=None) -> None:
     """Keep the client under `rpm` LLM calls per minute (sliding window) by delaying call_llm.
-    Free-tier Flash-Lite allows 15 per minute. rpm <= 0 leaves the client alone."""
+    Free-tier Flash-Lite allows 15 per minute. rpm <= 0 leaves the client alone.
+    Also sets `llm.wait_for_turn()`, which run_turn calls before a turn: it waits until the window
+    has room for TURN_HEADROOM calls, so waits fall between turns and not inside a turn's deadline
+    (a wait inside `rewrite` could use up the 30 s pre-routing deadline)."""
     import time
     from collections import deque
     if rpm <= 0:
@@ -270,4 +279,13 @@ def throttle_llm(llm, rpm: int, *, clock=None, sleep=None) -> None:
         sent.append(now)
         return original(*args, **kwargs)
 
+    def wait_for_turn() -> None:
+        now = clock()
+        while sent and now - sent[0] >= 60:
+            sent.popleft()
+        room = max(1, min(TURN_HEADROOM, rpm))
+        if len(sent) > rpm - room:
+            sleep(60 - (now - sent[len(sent) - (rpm - room) - 1]) + 0.1)
+
     llm.call_llm = limited
+    llm.wait_for_turn = wait_for_turn

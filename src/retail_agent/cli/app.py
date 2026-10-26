@@ -21,7 +21,7 @@ from retail_agent.agent.state import (
     AssistantResponse, ConfirmRequest, ErrorEvent, FinalResponse, ProgressEvent, RateLimitWait, ReportSummary,
 )
 from retail_agent.agent.threads import ThreadRegistry
-from retail_agent.analysis.output import AnalysisOutput
+from retail_agent.analysis.output import AnalysisOutput, format_cell
 from retail_agent.config import ConfigError, Settings, load_catalog, load_settings, load_text
 from retail_agent.llm.wrapper import LLMClient
 from retail_agent.reports.store import ReportStore
@@ -71,6 +71,11 @@ def _report_table(reports: Sequence[ReportSummary]) -> Table:
     return table
 
 
+def _hidden_rows(result) -> str | None:
+    hidden = (result.total_rows or len(result.rows)) - len(result.rows)
+    return f"{hidden} more row{'s' if hidden != 1 else ''} not shown" if hidden > 0 else None
+
+
 def render_analysis(console: Console, out: AnalysisOutput) -> None:
     """Summary first, then findings and actions as tables, then definitions and limitations."""
     if out.outcome == "clarification" and out.clarification_question:
@@ -85,6 +90,18 @@ def render_analysis(console: Console, out: AnalysisOutput) -> None:
         for f in out.findings:
             table.add_row(f.id, f.statement, ", ".join(f.query_ids))
         console.print(table)
+    for result in out.tables:
+        if not result.columns:
+            continue
+        table = Table(title=result.title, title_justify="left")
+        for column in result.columns:
+            table.add_column(column)
+        for row in result.rows:
+            table.add_row(*(format_cell(v) for v in row))
+        console.print(table)
+        hidden = _hidden_rows(result)
+        if hidden:
+            console.print(hidden, style="dim", markup=False)
     if out.action_items:
         table = Table(title="Recommended actions", title_justify="left")
         table.add_column("Action")

@@ -104,3 +104,18 @@ def test_errors_show_the_thread_id_and_the_loop_continues(env, monkeypatch):
     assert "daily quota" in text and "gemini-x" in text
     assert f"(thread {env.app.current_thread_id})" in text
     assert "I can only help with analysis" in text
+
+
+def test_result_tables_are_rendered_with_hidden_row_note():
+    import io
+    from rich.console import Console
+    from retail_agent.analysis.output import AnalysisOutput, ResultTable
+    from retail_agent.cli.app import render_analysis
+    out = AnalysisOutput(outcome="answer", definitions_used=["d"], findings=[], limitations=[], action_items=[],
+                         summary="Top products.", entities=[], title="t", description="d",
+                         tables=[ResultTable(title="Top 10 products", query_id="Q1", columns=["name", "revenue"],
+                                             rows=[["Jacket", 9933.0], ["Hoodie", 9030.0]], total_rows=12)])
+    buf = io.StringIO()
+    render_analysis(Console(file=buf, force_terminal=False, width=100, soft_wrap=True), out)
+    text = buf.getvalue()
+    assert "Top 10 products" in text and "Jacket" in text and "9,933.00" in text and "10 more rows not shown" in text

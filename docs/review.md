@@ -273,6 +273,7 @@ Only SM-01 and SM-02 were run. They are the two dialogues Stage 8 never re-ran a
 - **Accept as known limitations:** L5, L9, L10, and the DD §8.4 singleton-group gap. Record them in the README.
 - **Not code:** M3 (HLD and the experience statement).
 - **Quota hint:** run `pytest -m "bq and not llm"` to keep BigQuery checks off the Gemini quota (L4).
+- **After all fixes:** run the golden business cases for `brand_manager_1` and `brand_manager_2`, plus smoke SM-09, SM-11 and SM-12. These are the live checks this review left open (§8.4); record the results in §8.
 
 ---
 
@@ -366,3 +367,29 @@ The agent does answer varied questions from non-technical executives:
 It is **not yet complete** on two points, both for Stage 11:
 1. **N1:** "list" and "show me the series" questions return only the top or end values.
 2. **N2:** a short evaluative follow-up can be refused mid-conversation.
+
+### 8.7 Fixes of N1, N2, N3 (applied after the review at the user's request; not committed)
+
+| Finding | Fix | Files |
+|---|---|---|
+| **N1** list and series answers cut short | New `AnalysisOutput.tables`. The model only names a query of the turn (`title` + `query_id`); code attaches that query's real rows (`attach_tables`), so table values are never model-written. Tables naming a failed or unknown query are dropped with a limitation (the repair round feeds the problem back once). Rows are capped by `turn.table_rows` (50), and history keeps `turn.history_table_rows` (10) per table (DD §5.1). Tables go through the final-answer PII scan and are rendered by the CLI. The analysis and report prompts tell the model when to add a table. | `analysis/output.py`, `analysis/tools.py`, `analysis/subgraph.py`, `agent/nodes.py` (history), `cli/app.py`, `config.py`, `config.yaml`, `content/prompts/analysis.md`, `report.md` |
+| **N2** short follow-ups refused | (a) The rewrite prompt now says that messages pointing back ("that", "they", "all this", "why?") or asking for an opinion on the previous answer must name the metric, period and entities they refer to. (b) Deterministic guard in `validate_classification`: with history, a message that refers back (`is_follow_up`) is never routed `off_topic`; it goes to `analysis`, which sees the history. `malicious` is unchanged. The routing eval applies the same guard. | `content/prompts/rewrite.md`, `agent/nodes.py`, `scripts/run_routing_eval.py` |
+| **N3** eval throttle ate the turn deadline | `throttle_llm` sets `wait_for_turn()`, which `run_turn` calls before each turn, so waits fall between turns. | `scripts/_common.py` |
+
+Tests: 7 new offline tests.
+- **Tables** (`tests/test_analysis.py`, `tests/test_cli.py`): filled from rows, model values ignored, failed/unknown query dropped, capped, shortened in history, JSON-safe, CLI rendering.
+- **Follow-ups** (`tests/test_agent_graph.py`): guard in post-validation; a referring follow-up reaches analysis while "tell me a joke" is still refused.
+- **Throttle** (`tests/test_eval_tools.py`).
+- `pytest`: **373 passed**.
+- `docs/contracts.md` updated: `TurnSettings`, §4.1 guard, §4.2 `ResultTable` / `attach_tables` / `render_markdown`, §4.8 `TableRef`.
+
+Live re-runs (free profile, about 76 calls):
+
+| Run | Before | After |
+|---|---|---|
+| Golden B01 "List the top 10 best sellers…" (CEO) | FAIL (10th product missing) | **PASS**, all key numbers |
+| Golden B11 "Show monthly revenue for the last 12 months" (CEO) | FAIL (only first and last month) | **PASS**, incl. the partial-month mention |
+| Routing follow-ups R47–R58 | rewrites 9/11 | **rewrites 11/11**, 12/12 routed, override 1/1 |
+| Smoke SM-08 (8-turn conversation) | 22/27, turn 6 refused | **PASS 27/27**. "put that in a table" returns a table; "is that good or bad?" is answered (the rewrite resolved it to women's YTD revenue by brand) |
+
+Deviation (DD §10.4): `tables` is a new output field that DD does not list. It is the simplest way to answer "list" and "series" questions without letting the model copy numbers. History now holds up to 10 rows per table of the *final answer* (still never raw tool results).

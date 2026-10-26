@@ -7,6 +7,7 @@ value that crosses a node boundary is checkpoint-serialisable.
 from __future__ import annotations
 
 import dataclasses
+import re
 import time
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Iterator, Literal
@@ -48,6 +49,9 @@ NO_MATCH_TEXT = "No reports match."
 DELETE_CANCELLED_NOTE = "Deletion cancelled."
 _NO_CLARIFY = "Do not choose `clarify` now; pick the most likely reading instead."
 _REWRITE_MAX_CHARS = 2000
+# Words that make a message depend on the previous turns ("is that good?", "why?", "how often do they buy?").
+_REFERS_BACK = re.compile(r"\b(that|this|these|those|it|its|they|them|their|why|all this)\b", re.IGNORECASE)
+FOLLOW_UP_NOTE = " [follow-up to the conversation: routed to analysis instead of off_topic]"
 _NO_HISTORY_KINDS = {"error", "refusal"}
 
 
@@ -67,11 +71,21 @@ class ClassifyOutput(BaseModel):
     overrides: list[MetricOverride] = []
 
 
+def is_follow_up(message: str, history: list) -> bool:
+    """The message refers back to an earlier turn of a conversation that has one."""
+    return bool(history) and bool(_REFERS_BACK.search(message))
+
+
 def validate_classification(out: ClassifyOutput, question: str, *, consecutive_clarifications: int,
-                            max_clarifications: int) -> ClassifyOutput:
-    """Deterministic post-validation of the classifier output (contracts §4.1)."""
+                            max_clarifications: int, follow_up: bool = False) -> ClassifyOutput:
+    """Deterministic post-validation of the classifier output (contracts §4.1).
+    A follow-up that refers back to the conversation is never refused as off_topic: classify sees
+    only the rewritten question, so a rewrite that lost the context must not end in a refusal."""
     update: dict = {}
-    if out.intent == "clarify" and (not (out.clarification_question or "").strip()
+    if follow_up and out.intent == "off_topic":
+        update["intent"] = "analysis"
+        update["reason"] = out.reason + FOLLOW_UP_NOTE
+    elif out.intent == "clarify" and (not (out.clarification_question or "").strip()
                                     or consecutive_clarifications >= max_clarifications):
         update["intent"] = "analysis"
         update["clarification_question"] = None
@@ -180,7 +194,8 @@ def classify_node(deps: "Deps", state: AgentState) -> dict:
         result = deps.llm.call_llm("cheap", [_safety(deps), HumanMessage(prompt)], ctx,
                                    node="classify", schema=ClassifyOutput)
         out = validate_classification(result.parsed, question, consecutive_clarifications=consecutive,
-                                      max_clarifications=turn.max_consecutive_clarifications)
+                                      max_clarifications=turn.max_consecutive_clarifications,
+                                      follow_up=is_follow_up(state["user_input"], state.get("history", [])))
         span.update(intent=out.intent, classify_reason=out.reason)
 
     overrides = dict(state.get("metric_overrides") or {})
@@ -381,7 +396,8 @@ def finalize_node(deps: "Deps", state: AgentState) -> dict:
     with _span(tracer):
         kind = response["kind"]
         if response.get("analysis"):
-            answer = render_markdown(AnalysisOutput(**response["analysis"]))
+            answer = render_markdown(AnalysisOutput(**response["analysis"]),
+                                     max_table_rows=deps.settings.turn.history_table_rows)
         else:
             answer = response.get("text") or ""
         history = list(state.get("history", []))

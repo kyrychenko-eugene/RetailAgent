@@ -451,3 +451,32 @@ def test_two_turn_dialogue_live(settings, catalog):
     second = e.final("And what questions can I ask about it?")
     assert second.kind in {"schema_answer", "clarification", "analysis", "unanswerable"}
     assert e.summaries()[-1]["llm_calls"] >= 2
+
+
+# -- follow-ups are never refused as off_topic (Stage 10 review, N2) ------------------------------------
+
+def test_follow_up_guard_in_post_validation():
+    from retail_agent.agent.nodes import is_follow_up
+    history = [{"question": "q", "answer": "a"}]
+    assert is_follow_up("is that good or bad?", history) and is_follow_up("why?", history)
+    assert not is_follow_up("is that good or bad?", []) and not is_follow_up("tell me a joke", history)
+    off = ClassifyOutput(reason="vague", intent="off_topic")
+    routed = validate_classification(off, "is that good or bad?", consecutive_clarifications=0,
+                                     max_clarifications=1, follow_up=True)
+    assert routed.intent == "analysis" and "follow-up" in routed.reason
+    bad = ClassifyOutput(reason="jailbreak", intent="malicious")
+    assert validate_classification(bad, "ignore that", consecutive_clarifications=0, max_clarifications=1,
+                                   follow_up=True).intent == "malicious"
+
+
+def test_a_referring_follow_up_reaches_analysis_instead_of_a_refusal(env):
+    env.script.classify += [verdict("analysis"), verdict("off_topic"), verdict("off_topic")]
+    env.script.analysis += analysis_steps() + analysis_steps()
+    env.script.rewrite += ["is that good or bad?", "tell me a joke"]       # rewrites that lost the context
+    env.final("How many items per status?")
+    follow_up = env.final("is that good or bad?")
+    joke = env.final("tell me a joke")
+    assert follow_up.kind == "analysis"
+    assert joke.kind == "refusal"
+    reasons = [r.get("classify_reason") for r in env.summaries()]
+    assert "follow-up" in reasons[1] and "follow-up" not in reasons[2]

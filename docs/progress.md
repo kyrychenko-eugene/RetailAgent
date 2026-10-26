@@ -14,7 +14,7 @@ Stage log for `docs/implementation-plan.md`. Every stage updates this file (plan
 | 7 | CLI | done | 2026-10-25 | 10 |
 | 8 | Observability and eval tooling | done | 2026-10-25 | about 190 |
 | 9 | README and example run | done | 2026-10-25 | 43 |
-| 10 | Independent review | done | 2026-10-26 | about 330 |
+| 10 | Independent review | done | 2026-10-26 | about 405 |
 | 11 | Fixes | not started | | |
 
 ---
@@ -423,3 +423,11 @@ None.
   - SM-08: 32; SM-10: 11; SM-08b: 22;
   - golden B06, B17, B22, B23, B26: 18.
   - Stage 10 total: about 330.
+
+### Follow-up: fixes of N1, N2, N3 (at the user's request; not committed)
+- **What changed:** N1 result tables filled from query rows; N2 rewrite prompt plus the off-topic follow-up guard; N3 throttle between turns. Details and files are in `docs/review.md` §8.7.
+- **Contracts and config:** `docs/contracts.md` updated; new config keys `turn.table_rows` and `turn.history_table_rows`.
+- **Deviation (DD §10.4):** new `AnalysisOutput.tables` field.
+- **Deviation (stage scope):** a reviewer stage changed agent code at the user's explicit request; plan Stage 11 would normally do this.
+- **Results:** `pytest` 373 passed. Live: B01 and B11 now pass, follow-up rewrites 11/11, SM-08 27/27.
+- **Live LLM calls:** about 76 (B01: 5, B11: 4, routing follow-ups: 24, SM-08: 43).

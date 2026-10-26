@@ -322,3 +322,52 @@ def test_check_output_fixes_and_markdown():
     assert len(fixed.description) <= 200 and problems and fixed.limitations
     md = render_markdown(fixed)
     assert md.startswith("sum") and "Limitations" in md and "Definitions used" in md
+
+
+# -- result tables (Stage 10 review, N1) ------------------------------------------------------------
+
+def test_tables_are_filled_from_the_query_rows_not_from_the_model(settings, catalog):
+    rows = [{"status": s, "n": n} for s, n in [("Complete", 30), ("Shipped", 20), ("Returned", 5)]]
+    runner = FakeRunner(rows=rows)
+    table = {"title": "Items per status", "query_id": "Q1",
+             "columns": ["made", "up"], "rows": [["by", "the model"]]}            # ignored: code fills
+    env = Env(settings, catalog, [step(sql_call(SQL, "a")), final(tables=[table])], runner=runner)
+    out = env.run().output
+    assert [t.title for t in out.tables] == ["Items per status"]
+    t = out.tables[0]
+    assert t.columns == ["status", "n"] and t.rows == [["Complete", 30], ["Shipped", 20], ["Returned", 5]]
+    assert t.total_rows == 3
+    text = render_markdown(out)
+    assert "| Shipped | 20 |" in text and "Items per status" in text
+
+
+def test_tables_naming_a_failed_or_unknown_query_are_dropped(settings, catalog):
+    answer = dict(tables=[{"title": "bad", "query_id": "Q1"}, {"title": "ghost", "query_id": "Q9"},
+                          {"title": "good", "query_id": "Q2"}],
+                  findings=[{"id": "F1", "statement": "x", "query_ids": ["Q2"]}])
+    # The bad references go back to the model once (repair round); the repeat is fixed in code.
+    env = Env(settings, catalog, [step(sql_call("SELECT email FROM users", "a")), step(sql_call(SQL, "b")),
+                                  final("f1", **answer), final("f2", **answer)])
+    out = env.run().output
+    assert any("refers to query Q1" in m for m in env.tool_messages())
+    assert [t.title for t in out.tables] == ["good"]
+    assert sum("table" in x.lower() for x in out.limitations) == 2
+
+
+def test_tables_are_capped_and_shortened_in_history(settings, catalog):
+    import dataclasses
+    from datetime import date as d
+    from decimal import Decimal
+    from retail_agent.analysis.output import ResultTable, attach_tables
+    out = AnalysisOutput(**{k: v for k, v in answer_args().items()},
+                         tables=[ResultTable(title="Monthly", query_id="Q1")])
+    rows = [{"month": d(2026, m, 1), "revenue": Decimal("10.5") * m} for m in range(1, 13)]
+    filled = attach_tables(out, {"Q1": (("month", "revenue"), rows)}, max_rows=settings.turn.table_rows)
+    t = filled.tables[0]
+    assert t.rows[0] == ["2026-01-01", 10.5] and t.total_rows == 12
+    filled.model_dump_json()                                       # JSON-safe for checkpoints and saved reports
+    capped = attach_tables(out, {"Q1": (("month", "revenue"), rows)}, max_rows=5).tables[0]
+    assert len(capped.rows) == 5 and capped.total_rows == 12
+    short = render_markdown(filled, max_table_rows=3)
+    assert "2026-03-01" in short and "2026-04-01" not in short and "9 more rows not shown" in short
+    assert dataclasses.is_dataclass(settings.turn) and settings.turn.history_table_rows < settings.turn.table_rows

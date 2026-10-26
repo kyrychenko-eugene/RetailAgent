@@ -5,7 +5,7 @@ import csv
 import io
 
 from langchain_core.tools import BaseTool, StructuredTool
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from retail_agent.analysis.output import AnalysisOutput
 from retail_agent.security.guards import (
@@ -26,7 +26,16 @@ class GetColumnValuesArgs(BaseModel):
     limit: int = 50
 
 
-class FinalAnswer(AnalysisOutput): ...
+class TableRef(BaseModel):
+    title: str = Field(description="Short title of the table, e.g. 'Top 10 products by revenue'.")
+    query_id: str = Field(description="ID of the query (Q1, Q2, ...) whose rows answer the list request.")
+
+
+class FinalAnswer(AnalysisOutput):
+    # The model only names a query; the loop attaches its real rows (analysis/output.attach_tables).
+    tables: list[TableRef] = Field(  # type: ignore[assignment]
+        default=[], description="Lists, rankings, breakdowns or series the user asked for: one entry per "
+                                "query whose rows should be shown as a table.")
 
 
 def make_tools(ctx: QueryContext) -> list[BaseTool]:

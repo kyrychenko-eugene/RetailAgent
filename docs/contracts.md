@@ -46,6 +46,8 @@ class LLMSettings: temperature: float; call_timeout_s: float; max_retries: int
 class TurnSettings: deadline_s: dict[str, float]   # intent -> seconds, has "default"
                     synthesis_reserve_s: float; tool_budget: dict[str, int]
                     history_turns: int; max_consecutive_clarifications: int; pii_attempts_before_stop: int
+                    table_rows: int = 50          # turn.table_rows: rows of a result table in an answer
+                    history_table_rows: int = 10  # turn.history_table_rows: rows of a table kept in history
     def deadline_for(self, intent: str) -> float: ...       # falls back to "default"
     def budget_for(self, intent: str) -> int: ...           # analysis / report_generation, else 0
 @dataclass(frozen=True)
@@ -605,6 +607,13 @@ Post-validation in code, with no extra LLM call:
 - `report_library` without `library_action` → `list`.
 - `delete` without `delete_scope` → `entity` with `delete_query` = the rewritten question.
 - `delete_scope == "entity"` without `delete_query` → `delete_query` = the rewritten question.
+- **Follow-up guard:** `off_topic` → `analysis` when the thread has history and the user's message refers back (`is_follow_up`: "that", "this", "it", "they", "them", "those", "why", "all this" …). Classify sees only the rewritten question, so a rewrite that lost the context must not end in a refusal. `reason` gets the suffix `FOLLOW_UP_NOTE`. `malicious` is never changed.
+
+```python
+def is_follow_up(message: str, history: list) -> bool: ...
+def validate_classification(out: ClassifyOutput, question: str, *, consecutive_clarifications: int,
+                            max_clarifications: int, follow_up: bool = False) -> ClassifyOutput: ...
+```
 
 `reason` comes first so the label is conditioned on it.
 
@@ -622,10 +631,18 @@ class ActionItem(BaseModel):
     action: str
     finding_id: str                    # must reference findings[].id
 
+class ResultTable(BaseModel):
+    title: str
+    query_id: str                      # a successful query of this turn
+    columns: list[str] = []            # filled by code from that query's result, never by the model
+    rows: list[list[Any]] = []         # JSON-safe cells, at most turn.table_rows
+    total_rows: int | None = None      # rows the query returned (> len(rows) when cut)
+
 class AnalysisOutput(BaseModel):
     outcome: Literal["answer", "cannot_answer", "clarification"]
     definitions_used: list[str]        # glossary definitions + overrides + concrete date range + granularity
     findings: list[Finding]
+    tables: list[ResultTable] = []     # lists, rankings, breakdowns, series the user asked for
     limitations: list[str]             # gaps, failed sub-queries, partial periods, budget/deadline stops
     action_items: list[ActionItem]     # required (>= 1) for report_generation when outcome == "answer"
     summary: str                       # rendered first by the CLI
@@ -637,9 +654,16 @@ class AnalysisOutput(BaseModel):
 def check_output(out: AnalysisOutput, *, executed_query_ids: set[str],
                  report: bool) -> tuple[AnalysisOutput, list[str]]:
     """Deterministic fixes + problems found: drop action items whose finding_id is unknown,
-    drop unknown query_ids, and add a limitation line for each fix. Raises nothing."""
+    drop unknown query_ids, drop tables whose query has no result, and add a limitation line
+    for each fix. Raises nothing."""
 
-def render_markdown(out: AnalysisOutput) -> str: ...   # summary, findings, action items, definitions, limitations
+def attach_tables(out: AnalysisOutput, results: Mapping[str, tuple[Sequence[str], Sequence[Mapping]]],
+                  *, max_rows: int) -> AnalysisOutput:
+    """Fill each table from {query_id: (columns, rows)} of this turn; drop tables without a result."""
+
+def render_markdown(out: AnalysisOutput, *, max_table_rows: int | None = None) -> str: ...
+    # summary, findings, tables, action items, definitions, limitations; history uses
+    # max_table_rows = turn.history_table_rows
 ```
 
 How special cases are represented:
@@ -772,7 +796,10 @@ class GetColumnValuesArgs(BaseModel):
     column: str                                # "table.column"
     search: str | None = None
     limit: int = 50
-class FinalAnswer(AnalysisOutput): ...         # final-answer tool; its args are the structured output
+class TableRef(BaseModel):
+    title: str; query_id: str
+class FinalAnswer(AnalysisOutput):              # final-answer tool; its args are the structured output
+    tables: list[TableRef] = []                 # the model names queries only; run_analysis attaches the rows
 
 def make_tools(ctx: QueryContext) -> list[BaseTool]: ...    # run_sql, get_column_values (+ final_answer schema)
 def format_outcome_for_model(outcome: QueryOutcome) -> str:

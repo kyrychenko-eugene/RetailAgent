@@ -371,3 +371,17 @@ def test_routing_rewrite_and_override_scoring():
     assert s["rewrite_accuracy"] == (1, 2) and s["override_accuracy"] == (0, 1)
     assert s["rewrite_failures"][0]["id"] == "2"
     assert "follow-up rewrites keeping the context: 1/2" in routing.format_report(s, 2, "free")
+
+
+def test_throttle_waits_between_turns_not_inside_them():
+    from types import SimpleNamespace
+    now, slept = [0.0], []
+    llm = SimpleNamespace(call_llm=lambda *a, **k: "ok")
+    common.throttle_llm(llm, 8, clock=lambda: now[0], sleep=lambda s: (slept.append(s), now.__setitem__(0, now[0] + s)))
+    for _ in range(4):
+        llm.call_llm()
+    llm.wait_for_turn()                      # 4 in the window, room for 6 needs at most 2: wait for the 2 oldest
+    assert slept == [pytest.approx(60.1)]
+    slept.clear()
+    llm.wait_for_turn()                      # window now empty enough
+    assert slept == []

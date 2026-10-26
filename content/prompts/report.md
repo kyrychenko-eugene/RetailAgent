@@ -19,6 +19,7 @@ Write a management report answering the request below: headline KPIs for the per
 - Results return at most {{max_rows}} rows; aggregate in SQL.
 - If a tool says a brand is outside this user's data, stop and tell the user they have no access to it.
 - If some queries fail or the budget runs out, write the report from what succeeded and list the gaps in `limitations`.
+- When the user asks for a list, ranking, breakdown or series (top N, by month, by category, per segment), write one query whose rows are that list and add it to `tables` with a short `title` and its `query_id`. The system shows that query's rows to the user, so findings can state the key points instead of repeating every row.
 - Finish by calling `final_answer` once:
   - every number comes from a query result of this turn, with query IDs in each finding;
   - at least one action item, and every action item references the finding it follows from (`finding_id`); action items are specific and measurable where possible;

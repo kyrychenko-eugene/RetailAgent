@@ -67,6 +67,8 @@ turn:
   history_turns: 6            # last N turns in prompts, question + final answer only (DD §5.1)
   max_consecutive_clarifications: 1
   pii_attempts_before_stop: 2 # PII_COLUMN rejections in one turn that stop the turn (DD §10.2)
+  table_rows: 50              # rows of a result table in an answer (lists, rankings, series); filled from query rows
+  history_table_rows: 10      # rows of each table kept in conversation history (bounded prompts, DD §5.1)
 
 bigquery:
   project_env: GOOGLE_CLOUD_PROJECT   # project that runs (and pays for) query jobs

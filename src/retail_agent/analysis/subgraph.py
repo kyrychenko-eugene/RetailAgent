@@ -19,7 +19,7 @@ from retail_agent.agent.prompt_assembly import (
 )
 from retail_agent.agent.state import AgentState, ProgressEvent
 from retail_agent.analysis.output import (
-    AnalysisOutput, AnalysisResult, QueryRecord, check_output, render_markdown,
+    AnalysisOutput, AnalysisResult, QueryRecord, attach_tables, check_output, render_markdown,
 )
 from retail_agent.analysis.tools import (
     FINAL_ANSWER, FinalAnswer, format_outcome_for_model, make_tools, retrieve_golden_examples,
@@ -124,6 +124,7 @@ def run_analysis(question: str, *, mode: Literal["analysis", "report_generation"
         glossary=glossary, content_dir=content_dir, today=today))]
     records: list[QueryRecord] = []
     ok_ids: set[str] = set()
+    results: dict[str, QuerySuccess] = {}      # rows for the tables of the final answer
     stopped_by: str | None = None
     output: AnalysisOutput | None = None
     bad_finals = 0
@@ -194,6 +195,7 @@ def run_analysis(question: str, *, mode: Literal["analysis", "report_generation"
             records.append(_record(outcome))
             if isinstance(outcome, QuerySuccess):
                 ok_ids.add(outcome.query_id)
+                results[outcome.query_id] = outcome
             messages.append(ToolMessage(format_outcome_for_model(outcome), tool_call_id=call["id"], name=name))
             if isinstance(outcome, QueryFailure) and outcome.terminal:
                 if outcome.kind in _TERMINAL_STOP:
@@ -205,7 +207,7 @@ def run_analysis(question: str, *, mode: Literal["analysis", "report_generation"
     if output is None:
         output = _synthesize(messages, final_tool, ctx, llm, node, stopped_by, ok_ids, report)
 
-    output = _finalize(output, stopped_by, qctx)
+    output = _finalize(output, stopped_by, qctx, results)
     return AnalysisResult(output=output, user_message=None, stopped_by=stopped_by, queries=tuple(records))
 
 
@@ -227,7 +229,10 @@ def _synthesize(messages: list[BaseMessage], final_tool, ctx: TurnContext, llm: 
     return fixed
 
 
-def _finalize(output: AnalysisOutput, stopped_by: str | None, qctx: QueryContext) -> AnalysisOutput:
+def _finalize(output: AnalysisOutput, stopped_by: str | None, qctx: QueryContext,
+              results: dict[str, QuerySuccess]) -> AnalysisOutput:
+    output = attach_tables(output, {q: (r.columns, r.rows) for q, r in results.items()},
+                           max_rows=qctx.settings.turn.table_rows)
     if stopped_by in _STOP_LIMITATION and output.outcome == "answer":
         output = output.model_copy(update={"limitations": [*output.limitations, _STOP_LIMITATION[stopped_by]]})
     hits = scan_text_for_pii(render_markdown(output))

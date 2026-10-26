@@ -563,9 +563,14 @@ The reviewer does not change code.
 **Do.**
 - Fix every critical and high finding, and medium ones where cheap.
 - Re-run the affected tests and the smoke run.
-- Update `docs/progress.md`: what was fixed, and what is accepted as a known limitation.
+- **After all fixes, run the live checks the review left open** (free profile, `--rpm` at or below the per-minute limit; spread over two days if the daily quota runs out):
+  - the golden business cases for both brand managers: `python scripts/run_golden.py --category business --persona brand_manager_1`, then the same for `brand_manager_2` (26 cases each);
+  - the smoke dialogues not yet run: `python scripts/run_smoke.py --case SM-09`, then `SM-11` and `SM-12`.
+- Update `docs/progress.md`: what was fixed, and what is accepted as a known limitation. Record the results of these runs in `docs/review.md` §8.
 
 If a critical finding was in the security core, run a short focused Opus re-check of that area.
+
+**Live LLM calls.** About 300 for the closing runs (two golden personas ~260, three dialogues ~40), so this stage exceeds the usual per-stage caps.
 
 ---
 
