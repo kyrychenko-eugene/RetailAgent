@@ -119,3 +119,9 @@ def test_result_tables_are_rendered_with_hidden_row_note():
     render_analysis(Console(file=buf, force_terminal=False, width=100, soft_wrap=True), out)
     text = buf.getvalue()
     assert "Top 10 products" in text and "Jacket" in text and "9,933.00" in text and "10 more rows not shown" in text
+
+
+def test_feedback_comment_is_masked(env):
+    run_piped(env, ["/login ceo", "/feedback bad call me on 415 555 0100", "/quit"])
+    fb = next(r for r in env.tracer.records if r["event"] == "feedback")
+    assert "415" not in fb["comment"] and "<PHONE>" in fb["comment"]

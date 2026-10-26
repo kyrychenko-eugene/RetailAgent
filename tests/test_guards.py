@@ -276,3 +276,10 @@ def test_column_values_low_cardinality_without_search(make_ctx):
 def test_normalize_sql():
     assert normalize_sql("select A from X -- c\nwhere b=1;") == normalize_sql("SELECT a FROM x WHERE b = 1")
     assert normalize_sql("SELECT FROM WHERE (") == "select from where ("
+
+
+def test_bq_error_text_has_no_urls(make_ctx):
+    err = "POST https://bigquery.googleapis.com/bigquery/v2/projects/my-proj/jobs: Unrecognized name: foo"
+    runner = FakeRunner(dry=DryRunResult(ok=False, bytes_processed=None, error=err))
+    out = run_scoped_query(SQL, make_ctx(runner))
+    assert "my-proj" not in out.model_message and "Unrecognized name" in out.model_message

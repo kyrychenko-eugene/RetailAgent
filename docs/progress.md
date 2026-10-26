@@ -431,3 +431,23 @@ None.
 - **Deviation (stage scope):** a reviewer stage changed agent code at the user's explicit request; plan Stage 11 would normally do this.
 - **Results:** `pytest` 373 passed. Live: B01 and B11 now pass, follow-up rewrites 11/11, SM-08 27/27.
 - **Live LLM calls:** about 76 (B01: 5, B11: 4, routing follow-ups: 24, SM-08: 43).
+
+
+## Stage 11 — Fixes
+
+### What was done
+- Fixed H1, H2, M2 (partly), L1, L2, L3, L4, L8; details and results in `docs/review.md` §8.8.
+- Opus re-check of the validator found six more bypass classes; fixed A, B, E and one false rejection, accepted C, D, F (with M1) as the DD §8.4 gap and recorded them in the README.
+- New cases: `eval/security_cases.yaml` QI-13 to QI-26, SS-L3, IM-L2; routing R59, R60; tests for error-text cleaning and feedback masking.
+- Closing live runs: golden business bm1 23/26, bm2 19/26; SM-09, SM-12 pass, SM-11 pass on the second run.
+
+### Deviations and questions
+1. M1, M3, L5, L6, L7, L9, L10 not fixed (M1 and L5, L9, L10 accepted as known limitations; M3 is the author's text; L6 and L7 left open).
+2. Quasi-identifier rule is conservative: any range or comparison of a customer ID with a constant counts as an identifier filter, so `WHERE id > 1000` next to demographic output is rejected.
+3. `docs/contracts.md` unchanged (no signature changes).
+
+### Known issues
+- Golden misses listed in `docs/review.md` §8.8 (shares and totals missing from answers on `free`).
+
+### Live LLM calls
+- About 330 attempts: golden bm1 109, golden bm2 177, SM-09 16, SM-11 16+19, SM-12 29.

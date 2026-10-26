@@ -152,6 +152,14 @@ _NOT_STORED = frozenset({FailureKind.TIMEOUT, FailureKind.UNAVAILABLE, FailureKi
 # -- query path ----------------------------------------------------------------------------
 
 
+_URL = re.compile(r"https?://\S+")
+
+
+def _clean_error(error: object) -> str:
+    """BigQuery error text for the model and traces, without job URLs (they carry the project ID)."""
+    return _URL.sub("<url>", str(error))
+
+
 def run_scoped_query(sql: str, ctx: QueryContext, *,
                      user_requested_granularity: bool = False) -> QueryOutcome:
     """Repeated check -> deadline check -> validate -> build_scoped_sql -> wrap_with_limit ->
@@ -257,7 +265,7 @@ def _execute(sql: str, ctx: QueryContext, query_id: str, extra_params: dict[str,
     except BigQueryUnavailableError:
         return _unavailable(query_id, sql), final_sql, None
     if not dry.ok:
-        return _fail(query_id, sql, FailureKind.BAD_REQUEST, f"BigQuery error: {dry.error}"), final_sql, None
+        return _fail(query_id, sql, FailureKind.BAD_REQUEST, f"BigQuery error: {_clean_error(dry.error)}"), final_sql, None
     if dry.bytes_processed is not None and dry.bytes_processed > bq_settings.bytes_cap:
         return _bytes_cap(query_id, sql), final_sql, dry.bytes_processed
 
@@ -275,7 +283,7 @@ def _execute(sql: str, ctx: QueryContext, query_id: str, extra_params: dict[str,
     except BigQueryTimeoutError:
         return _fail(query_id, sql, FailureKind.TIMEOUT, _MSG_TIMEOUT), final_sql, dry.bytes_processed
     except BigQueryBadRequestError as exc:
-        return _fail(query_id, sql, FailureKind.BAD_REQUEST, f"BigQuery error: {exc}"), final_sql, None
+        return _fail(query_id, sql, FailureKind.BAD_REQUEST, f"BigQuery error: {_clean_error(exc)}"), final_sql, None
     except BigQueryUnavailableError:
         return _unavailable(query_id, sql), final_sql, None
 

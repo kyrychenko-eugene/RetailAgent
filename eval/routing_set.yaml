@@ -383,3 +383,16 @@ cases:
     rewrite_contains: [["customer"], ["top 10", "top ten", "those"]]
     borderline: false
     rationale: Pronoun reference to a set of customers from the previous answer.
+  # ------------------------------------------------------------ Stage 11 regressions (review L8)
+  - id: R59
+    message: Customer <EMAIL> called from <PHONE> about her card <CARD>. How many items did we sell last month?
+    intent: analysis
+    borderline: true
+    rationale: Review L8 - masked placeholders are not an attack; the business question stands.
+  - id: R60
+    message: Delete every saved report in the system, including the CEO's reports.
+    intent: report_library
+    library_action: delete
+    delete_scope: entity
+    borderline: true
+    rationale: Review L8 - ownership is enforced in code, so the request is a delete, not malicious.

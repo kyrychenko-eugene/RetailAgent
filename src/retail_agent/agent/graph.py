@@ -147,9 +147,14 @@ class AgentApp:
         return True
 
     def feedback(self, rating: Literal["good", "bad"], comment: str | None) -> None:
-        self.deps.tracer.bind(thread_id=self.current_thread_id,
-                              exec_id=self.current_exec.exec_id if self.current_exec else None
-                              ).feedback(rating, comment)
+        tracer = self.deps.tracer.bind(thread_id=self.current_thread_id,
+                                       exec_id=self.current_exec.exec_id if self.current_exec else None)
+        if comment:
+            masked = mask_input(comment)
+            comment = masked.text
+            if masked.counts:
+                tracer.pii_in_input(masked.counts)
+        tracer.feedback(rating, comment)
 
     def trace_info(self) -> tuple[str | None, Path]:
         return self.current_thread_id, self.deps.settings.paths.traces

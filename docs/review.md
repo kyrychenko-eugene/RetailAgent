@@ -393,3 +393,34 @@ Live re-runs (free profile, about 76 calls):
 | Smoke SM-08 (8-turn conversation) | 22/27, turn 6 refused | **PASS 27/27**. "put that in a table" returns a table; "is that good or bad?" is answered (the rewrite resolved it to women's YTD revenue by brand) |
 
 Deviation (DD §10.4): `tables` is a new output field that DD does not list. It is the simplest way to answer "list" and "series" questions without letting the model copy numbers. History now holds up to 10 rows per table of the *final answer* (still never raw tool results).
+
+### 8.8 Stage 11 fixes and closing live runs (2026-10-26)
+
+**Fixed**
+
+| Finding | Fix |
+|---|---|
+| H1 | Demographic output is traced through every aggregate (`AVG`, `SUM`, `COUNTIF`...) when an identifier keys the query. Aggregates over demographics without an identifier stay allowed (QI-20). |
+| H2 | `UNNEST` aliases resolve to the origins of their array expression. Unresolvable sources, bare `ARRAY(SELECT ...)` and unmatched subqueries fail closed (everything reachable). |
+| M2 (partly) | Identifier filters now include `<`, `>`, `<=`, `>=`, function or arithmetic wrappers and `MIN/MAX` in `HAVING`, and constant subqueries. |
+| L1 | `/feedback` comments are masked and `pii_in_input` is traced. |
+| L2 | Phone shapes `415 555 0100`, `(415) 555 0100`, `415.555.0100` are masked (years are not). |
+| L3 | URLs (with the project ID) are stripped from BigQuery error text; `@@` system variables are rejected. |
+| L4 | README explains `-m "bq and not llm"`. |
+| L8 | The classify prompt treats `<EMAIL>/<PHONE>/<CARD>` as not malicious and every delete request as `report_library`. R59 and R60 added to the routing set. |
+
+New deterministic cases: QI-13 to QI-26, SS-L3, IM-L2. Offline `pytest`: 395 passed. `pytest -m "bq and not llm"`: 107 passed.
+
+**Opus re-check of the validator (required: security core).** It found six further classes. Fixed: A (lineage inside `ARRAY(...)` and `UNNEST((subquery))`), B (identifier visible through `SUM`/`AVG`/window aggregates; only `COUNT`-style aggregates hide it), E (`PIVOT` rejected), and a false rejection (`HAVING COUNT(...) > 100`). **Accepted and documented in the README:** C (constants via CTE or subquery, `LIKE`, `MOD`, `NOT <>`, `CASE`), D (one customer picked by `ORDER BY ... LIMIT 1` or `ROW_NUMBER`), F (demographics only as filters). Together with M1 they are the DD §8.4 gap that belongs to the HLD (k-anonymity in the data layer). Not fixed: M3 (HLD and experience statement are authored by the author), L6, L7, L5, L9, L10.
+
+**Closing live runs** (free profile, `--rpm 14`)
+
+| Run | Result |
+|---|---|
+| Golden business, `brand_manager_1` | **23/26.** FAIL: B02 (top country share 33.57 % missing), B04 (revenue per customer of two states), B15 (total YTD revenue missing). |
+| Golden business, `brand_manager_2` | **19/26.** FAIL: B04, B06 (says no spike: answer was not detected as "no spike"), B09 (total customers in segments), B11 (first month of the series), B15, B20 (top channel share), B25 (men and women revenue). |
+| SM-09 clarification and merge | **PASS** 7/7 |
+| SM-11 honest limits | First run FAIL (turn 1 ended in an error after 30 s, a transient timeout); re-run **PASS** 11/11 |
+| SM-12 California vs Texas | **PASS** 12/12 |
+
+The golden misses are answer-completeness problems on the `free` model (a share or total number left out of the answer text, B04 and B15 in both personas), not security or scoping failures. They were not diagnosed further in this stage. B15 (total YTD revenue) and B04 are the repeating ones and are the first candidates for a prompt fix (ask for totals and shares next to the ranking).

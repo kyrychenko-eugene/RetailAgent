@@ -16,9 +16,10 @@ _CARD = re.compile(
 )
 _EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 # Starts with '+', or uses '-' / parentheses as separators, or is one unbroken run.
-# Dots and commas are not phone separators (amounts, decimals).
+# Dots and commas are not phone separators (amounts, decimals), except in the 3-3-4 shape
+# `415.555.0100` / `(415) 555 0100`.
 _PHONE = re.compile(
-    r"(?<![\w.,])(?:\+\d[\d \-()]{7,}\d|\(?\d{2,4}\)?(?:-|\) ?)\d[\d\-]{5,}\d|\d{9,15})(?![\w.,]*\d)"
+    r"(?<![\w.,])(?:\(?\d{3}\)?[ .]\d{3}[ .]\d{4}|\+\d[\d \-()]{7,}\d|\(?\d{2,4}\)?(?:-|\) ?)\d[\d\-]{5,}\d|\d{9,15})(?![\w.,]*\d)"
 )
 _CARD_PREFIX = re.compile(r"^(?:4|5[1-5]|222[1-9]|22[3-9]\d|2[3-6]\d\d|27[01]\d|2720|3[47]|6011|65|64[4-9])")
 

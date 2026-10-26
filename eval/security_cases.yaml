@@ -66,6 +66,12 @@ sql_cases:
     scope: bm
     sql: "SELECT * FROM EXTERNAL_QUERY('us.conn', 'SELECT * FROM customers')"
     expect: {ok: false, reason_code: forbidden_function, security_event: true}
+  - id: SS-L3
+    rule: single_select
+    scope: bm
+    sql: SELECT @@project_id AS p
+    expect: {ok: false, reason_code: forbidden_function, security_event: true}
+    note: Review L3 - system variables expose the billing project.
   - id: SS-08
     rule: single_select
     scope: ceo
@@ -476,6 +482,92 @@ sql_cases:
     expect: {ok: true}
     note: Demographics without the identifier.
 
+  - id: QI-13
+    rule: quasi_identifier
+    scope: bm
+    sql: SELECT u.id, AVG(u.age) AS age, COUNTIF(u.gender = 'F') AS female FROM users u GROUP BY u.id
+    expect: {ok: false, reason_code: quasi_identifier, security_event: true}
+    note: Review H1 - AVG/COUNTIF per customer is that customer's demographic.
+  - id: QI-14
+    rule: quasi_identifier
+    scope: bm
+    sql: SELECT id, SUM(age) AS age FROM users GROUP BY id
+    expect: {ok: false, reason_code: quasi_identifier, security_event: true}
+    note: Review H1 - SUM per customer.
+  - id: QI-15
+    rule: quasi_identifier
+    scope: bm
+    sql: SELECT x AS customer, age, gender, city, state FROM users, UNNEST([id]) AS x
+    expect: {ok: false, reason_code: quasi_identifier, security_event: true}
+    note: Review H2 - identifier passed through UNNEST (lineage fails closed).
+  - id: QI-16
+    rule: quasi_identifier
+    scope: bm
+    sql: SELECT age, gender, city FROM users WHERE id >= 42 AND id <= 42
+    expect: {ok: false, reason_code: quasi_identifier, security_event: true}
+    note: Review M2 - range filter on an identifier.
+  - id: QI-17
+    rule: quasi_identifier
+    scope: bm
+    sql: SELECT age, gender, city FROM users GROUP BY age, gender, city HAVING MIN(id) = 42
+    expect: {ok: false, reason_code: quasi_identifier, security_event: true}
+    note: Review M2 - HAVING on an identifier aggregate.
+  - id: QI-18
+    rule: quasi_identifier
+    scope: bm
+    sql: SELECT age, gender FROM users WHERE id = (SELECT 42)
+    expect: {ok: false, reason_code: quasi_identifier, security_event: true}
+    note: Review M2 - constant subquery.
+  - id: QI-19
+    rule: quasi_identifier
+    scope: bm
+    sql: SELECT age, gender FROM users WHERE ABS(id) = 42
+    expect: {ok: false, reason_code: quasi_identifier, security_event: true}
+    note: Review M2 - function-wrapped identifier.
+  - id: QI-20
+    rule: quasi_identifier
+    scope: bm
+    sql: SELECT u.state, AVG(u.age) AS avg_age FROM users u GROUP BY u.state
+    expect: {ok: true}
+    note: Aggregates over demographics stay allowed when no identifier keys the query.
+
+  - id: QI-21
+    rule: quasi_identifier
+    scope: bm
+    sql: SELECT ARRAY(SELECT id FROM users u2 WHERE u2.city = u.city) AS k, u.city FROM users u
+    expect: {ok: false, reason_code: quasi_identifier, security_event: true}
+    note: Opus re-check A - ARRAY(SELECT ...) lineage fails closed.
+  - id: QI-22
+    rule: quasi_identifier
+    scope: bm
+    sql: SELECT x, age FROM users, UNNEST((SELECT [u2.id] FROM users u2 WHERE u2.id = users.id)) AS x
+    expect: {ok: false, reason_code: quasi_identifier, security_event: true}
+    note: Opus re-check A - UNNEST of a subquery.
+  - id: QI-23
+    rule: quasi_identifier
+    scope: bm
+    sql: SELECT SUM(id) OVER (ORDER BY created_at ROWS BETWEEN CURRENT ROW AND CURRENT ROW) AS k, age, gender FROM users
+    expect: {ok: false, reason_code: quasi_identifier, security_event: true}
+    note: Opus re-check B - SUM window over one row is the id.
+  - id: QI-24
+    rule: quasi_identifier
+    scope: bm
+    sql: SELECT city, age, gender, AVG(id) AS k FROM users GROUP BY 1, 2, 3
+    expect: {ok: false, reason_code: quasi_identifier, security_event: true}
+    note: Opus re-check B - AVG of an identifier.
+  - id: QI-25
+    rule: quasi_identifier
+    scope: bm
+    sql: SELECT * FROM (SELECT id, gender FROM users) PIVOT (COUNT(*) FOR gender IN ('F', 'M'))
+    expect: {ok: false, reason_code: forbidden_function, security_event: true}
+    note: Opus re-check E - PIVOT is not traced, so it is rejected.
+  - id: QI-26
+    rule: quasi_identifier
+    scope: bm
+    sql: SELECT u.gender, COUNT(o.user_id) AS n FROM users u JOIN orders o ON o.user_id = u.id GROUP BY u.gender HAVING COUNT(o.user_id) > 100
+    expect: {ok: true}
+    note: Opus re-check - a COUNT threshold is not an identifier filter.
+
 input_masking:
   # positives
   - id: IM-01
@@ -490,6 +582,10 @@ input_masking:
     text: "customer phone 0441234567"
     expect_text: "customer phone <PHONE>"
     expect_counts: {PHONE: 1}
+  - id: IM-L2
+    text: "call 415 555 0100, (415) 555 0100 or 415.555.0100; years 2023 2024 2025 2026"
+    expect_text: "call <PHONE>, <PHONE> or <PHONE>; years 2023 2024 2025 2026"
+    expect_counts: {PHONE: 3}
   - id: IM-04
     text: "card 4111 1111 1111 1111 was charged"
     expect_text: "card <CARD> was charged"

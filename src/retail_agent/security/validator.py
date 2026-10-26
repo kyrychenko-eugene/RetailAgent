@@ -192,6 +192,10 @@ def _check_functions(tree: exp.Expression) -> None:
         if not isinstance(table.this, exp.Identifier):
             # Table-valued function in FROM: EXTERNAL_QUERY(...), ML.PREDICT(...), ...
             raise _Reject(ReasonCode.FORBIDDEN_FUNCTION, function=_function_name(table.this))
+    if tree.find(exp.Pivot) is not None:
+        raise _Reject(ReasonCode.FORBIDDEN_FUNCTION, function="PIVOT")
+    if tree.find(exp.Parameter) is not None and "@@" in tree.sql(dialect=DIALECT):
+        raise _Reject(ReasonCode.FORBIDDEN_FUNCTION, function="@@system_variable")
     for func in tree.find_all(exp.Func):
         name = _function_name(func)
         parent = func.parent
@@ -394,6 +398,10 @@ def _check_brand_literals(tree: exp.Expression, scope: Scope) -> None:
 # -- quasi-identifiers (DD §8.2, §8.4, R12) ----------------------------------------------
 
 
+def catalog_columns(catalog: Catalog) -> dict[str, tuple[str, ...]]:
+    return {n: tuple(c.name.lower() for c in t.columns) for n, t in catalog.tables.items()}
+
+
 def _select_scopes(scope: SqlScope) -> list[SqlScope]:
     if isinstance(scope.expression, exp.SetOperation):
         return [s for child in scope.set_operation_scopes for s in _select_scopes(child)]
@@ -415,7 +423,12 @@ class _Lineage:
 
     _MAX_DEPTH = 50
 
-    def __init__(self, catalog: Catalog) -> None:
+    def __init__(self, catalog: Catalog, collapse: tuple[type[exp.Expression], ...] | None = None) -> None:
+        # collapse=None: every aggregate except the value aggregates hides its input.
+        # Otherwise only the listed aggregates do: AVG(age) per customer is that customer's age,
+        # SUM(id) over one row is the id. `()` follows every aggregate.
+        self.collapse = collapse
+        self.all_origins = {(n, c) for n, cols in catalog_columns(catalog).items() for c in cols}
         self.table_columns = {n: tuple(c.name.lower() for c in t.columns) for n, t in catalog.tables.items()}
 
     def origins(self, node: exp.Expression, scope: SqlScope, depth: int = 0) -> set[Origin]:
@@ -424,7 +437,9 @@ class _Lineage:
             return found
 
         def walk(n: exp.Expression) -> None:
-            if isinstance(n, exp.AggFunc) and not isinstance(n, _VALUE_AGGREGATES):
+            if isinstance(n, exp.AggFunc) and (
+                    not isinstance(n, _VALUE_AGGREGATES) if self.collapse is None
+                    else isinstance(n, self.collapse)):
                 return
             if isinstance(n, exp.Window):
                 walk(n.this)          # PARTITION BY / ORDER BY do not reach the value
@@ -434,8 +449,12 @@ class _Lineage:
             if isinstance(n, exp.Subquery):
                 # Scalar subquery: its output reaches this value (correlated lookups).
                 child = next((c for c in scope.subquery_scopes if c.expression is n.this), None)
-                if child is not None:
-                    found.update(self.scope_origins(child, depth + 1))
+                # Fail closed when the subquery's scope cannot be found.
+                found.update(self.scope_origins(child, depth + 1) if child is not None else self.all_origins)
+                return
+            if isinstance(n, exp.Query):
+                # A bare query (ARRAY(SELECT ...)) is not traced: assume it reaches everything.
+                found.update(self.all_origins)
                 return
             if isinstance(n, exp.Column):
                 found.update(self.column_origins(n, scope, depth))
@@ -479,26 +498,39 @@ class _Lineage:
         if isinstance(source, exp.Table):
             return {(source.name.lower(), name)}
         if isinstance(source, SqlScope):
+            if isinstance(source.expression, exp.Unnest):
+                # UNNEST([id]) AS x: x carries whatever the array expression references.
+                return self.origins(source.expression, scope, depth + 1)
             result: set[Origin] = set()
+            matched = False
             for child in _select_scopes(source):
                 proj = _projection(child, name)
                 if proj is not None:
+                    matched = True
                     result |= self.origins(proj, child, depth + 1)
-            return result
+            # Fail closed: a column that cannot be traced carries everything its source outputs.
+            return result if matched else self.scope_origins(source, depth)
         return set()
 
 
 def _is_constant(node: exp.Expression) -> bool:
-    return node.find(exp.Column, exp.Query, exp.Subquery) is None
+    return node.find(exp.Column, exp.Table) is None
+
+
+_COUNTING = tuple(getattr(exp, n) for n in ("Count", "ApproxDistinct", "CountIf") if hasattr(exp, n))
+_COMPARISONS = (exp.EQ, exp.GT, exp.GTE, exp.LT, exp.LTE)
+# Wrappers a model can put around an identifier without changing which customer is picked.
+_TRANSPARENT = (exp.Paren, exp.Cast, exp.Func, exp.Neg, exp.Add, exp.Sub, exp.Mul, exp.Div)
 
 
 def _is_literal_filter(col: exp.Column) -> bool:
-    """`col = <constant>`, `col IN (<constants>)`, `col IN UNNEST([...])` or BETWEEN constants."""
+    """A predicate that compares the identifier (possibly wrapped, or inside MIN/MAX in HAVING)
+    with constants: `=`, `<`, `>`, `<=`, `>=`, `IN (<constants>)`, `IN UNNEST([...])`, BETWEEN."""
     node: exp.Expression = col
     parent = node.parent
-    while isinstance(parent, (exp.Paren, exp.Cast)):
+    while (isinstance(parent, _TRANSPARENT) and not isinstance(parent, (exp.In, *_COUNTING))):
         node, parent = parent, parent.parent
-    if isinstance(parent, exp.EQ):
+    if isinstance(parent, _COMPARISONS):
         other = parent.expression if parent.this is node else parent.this
         return _is_constant(other)
     if isinstance(parent, exp.In) and parent.this is node:
@@ -520,15 +552,22 @@ def _check_quasi_identifiers(qualified: exp.Expression | None, catalog: Catalog)
     if root is None:
         return
     lineage = _Lineage(catalog)
+    wide = _Lineage(catalog, collapse=())
+    # Identifiers stay visible through every aggregate except those that only count.
+    id_lineage = _Lineage(catalog, collapse=_COUNTING)
     ids = {(n, c.name.lower()) for n, t in catalog.tables.items() for c in t.columns if c.customer_identifier}
     demo = {(n, c.name.lower()) for n, t in catalog.tables.items() for c in t.columns if c.demographic}
 
     outputs: set[Origin] = set()
+    outputs_wide: set[Origin] = set()
+    id_outputs: set[Origin] = set()
     grouped: set[Origin] = set()
     for select_scope in _select_scopes(root):
         select = select_scope.expression
         for projection in select.expressions:
             outputs |= lineage.origins(projection, select_scope)
+            outputs_wide |= wide.origins(projection, select_scope)
+            id_outputs |= id_lineage.origins(projection, select_scope)
         group = select.args.get("group")
         if group is not None:     # includes ROLLUP / CUBE / GROUPING SETS
             grouped |= lineage.origins(group, select_scope)
@@ -539,8 +578,8 @@ def _check_quasi_identifiers(qualified: exp.Expression | None, catalog: Catalog)
             if _is_literal_filter(col):
                 filtered |= lineage.column_origins(col, scope)
 
-    demographic_out = sorted(c for _, c in outputs & demo)
-    identifier = (outputs | grouped | filtered) & ids
+    demographic_out = sorted(c for _, c in outputs_wide & demo)
+    identifier = (id_outputs | grouped | filtered) & ids
     if demographic_out and identifier:
         raise _Reject(ReasonCode.QUASI_IDENTIFIER,
                       identifiers=sorted(f"{t}.{c}" for t, c in identifier),

@@ -131,7 +131,7 @@ The default run is offline (no LLM, no BigQuery) and must always pass. Markers:
 pytest -m bq
 ```
 
-needs GCP credentials and `GOOGLE_CLOUD_PROJECT` (scans a few MB per query).
+needs GCP credentials and `GOOGLE_CLOUD_PROJECT` (scans a few MB per query). It also runs the `llm`+`bq` tests, which call Gemini; use `pytest -m "bq and not llm"` to keep the Gemini quota untouched.
 
 ```bash
 pytest -m llm
@@ -174,6 +174,9 @@ Results recorded in `docs/progress.md` (Stage 8, `free` profile): routing accura
 ## Known limitations
 
 - **Narrow demographic groups** (DD §8.4). The validator blocks rows that combine a customer identifier with demographics, but a narrow filter such as a specific city, age and gender can still return an aggregate over a group of one. Closing this needs a minimum group size (k ≥ 5) with suppression, enforced in the data layer. It goes to the high-level design.
+- **Quasi-identifier rule is heuristic** (DD §8.4, review M1, C, D, F). It is deterministic for the shapes it knows (customer ID next to demographics, also through aggregates, `UNNEST` and `ARRAY(...)`; filters by `=`, ranges, `IN`, `BETWEEN`; `PIVOT` rejected). Still open: linking by `order_id`, item ID or row order; selecting one customer by `ORDER BY ... LIMIT 1`, by a constant that comes through a CTE or subquery, by `LIKE`/`REGEXP`/`MOD`; demographics used only as filters next to an ID. The data is synthetic, and a production system needs k-anonymity in the data layer (HLD).
+- **Brand literal checks** (review L9) do not cover `CONCAT`, `STARTS_WITH`, `REGEXP_CONTAINS` or `IN (SELECT 'Nike')`; the CTEs still return no out-of-scope rows, the user just gets an empty result instead of the "no access" message.
+- **Deadline floor** (review L5): a call started with under 10 s left still gets the 10 s Gemini minimum, so a turn can overrun its deadline by a few seconds.
 - **Names and free text in the input are not masked** (DD §8.5). Only emails, phone numbers (9+ digits) and Luhn-valid card numbers are masked. NER is not used on purpose: many brands in the dataset are personal names (Calvin Klein, Tommy Hilfiger), so NER would mask the brands. Text typed by the executive is their own disclosure; what is protected is the customer data in the database, and that is enforced by the data layer.
 - **Free-tier reliability.** Gemini 429 and 503 "high demand" responses are frequent on free keys. The wrapper retries and falls back along the chain, but a turn can still fail with a clear error.
 - **Answer quality on `free`.** Flash-Lite sometimes words limitations loosely (for example, saying "the executive's brands" to the CEO) and may need a rephrased question.
