@@ -451,3 +451,7 @@ None.
 
 ### Live LLM calls
 - About 330 attempts: golden bm1 109, golden bm2 177, SM-09 16, SM-11 16+19, SM-12 29.
+
+### Stage 11 follow-up: golden misses
+- Prompt rules for totals, shares and per-group comparison (`analysis.md`, `report.md`). Of the 10 golden misses, 8 pass on re-run; B04 and B09 for `brand_manager_2` remain open (`docs/review.md` §8.9). The full golden sets were not re-run after the change (offline `pytest` passes, 395).
+- Live LLM calls: about 120.

@@ -424,3 +424,22 @@ New deterministic cases: QI-13 to QI-26, SS-L3, IM-L2. Offline `pytest`: 395 pas
 | SM-12 California vs Texas | **PASS** 12/12 |
 
 The golden misses are answer-completeness problems on the `free` model (a share or total number left out of the answer text, B04 and B15 in both personas), not security or scoping failures. They were not diagnosed further in this stage. B15 (total YTD revenue) and B04 are the repeating ones and are the first candidates for a prompt fix (ask for totals and shares next to the ranking).
+
+### 8.9 Stage 11 follow-up: golden misses (2026-10-26)
+
+**Diagnosis.** The daily quota of the primary `free` model was exhausted, so the closing runs mostly used the fallback `gemini-3.1-flash-lite`. In the failing answers the full table was returned (rows from the query), but the finding text left out the total, the leader's share or one group's per-customer value. This is an answer-completeness gap in the prompt, not scoping or security.
+
+**Fix.** `content/prompts/analysis.md`: for breakdowns, splits and rankings the query also returns the total and each row's share, and a finding states the total and the leader's share; comparisons state the same metrics for every group; "sell more" questions report revenue and units. `content/prompts/report.md`: the same total and share rule for segmentations.
+
+**Re-runs (single cases, free profile).**
+
+| Case | Persona | Result |
+|---|---|---|
+| B02, B04, B20 | brand_manager_1 | pass |
+| B15 | brand_manager_1 | fail once, pass on re-run |
+| B15, B06, B11, B20, B25 | brand_manager_2 | pass |
+| B25 | brand_manager_1 | pass |
+| B04 | brand_manager_2 | **still fails** (16 LLM calls; state X per-customer revenue and AOV not matched) |
+| B09 | brand_manager_2 | **still fails** (total customers across RFM segments not stated; the report prompt rule was ignored) |
+
+Cases not re-run after the prompt change: the other 17 passing cases per persona. B09 and B04 (brand_manager_2) stay open as model-quality limitations of the `free` fallback; the next step would be a deterministic total row appended by code (like `attach_tables`) or a stronger model.

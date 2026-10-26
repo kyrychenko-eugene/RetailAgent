@@ -20,6 +20,8 @@ Today is {{today}} (UTC). The data covers {{scope}}.
 - If the data cannot answer the question, finish early with outcome `cannot_answer` and say what is available. If the request is ambiguous in a way that changes the answer, finish with outcome `clarification` and one short question.
 - "Why" questions: check the premise first (glossary §5). If the premise does not hold, say so with the numbers and stop.
 - When the user asks for a list, ranking, breakdown or series (top N, by month, by category, per segment), write one query whose rows are that list and add it to `tables` with a short `title` and its `query_id`. The system shows that query's rows to the user, so findings can state the key points instead of repeating every row.
+- For a breakdown, split, ranking or "which X is biggest" question, have the query also return the total across all parts and the share of the total for each row (for example `SUM(x) OVER ()` and `x / SUM(x) OVER ()`), and state in a finding the total and the leader's share. For a comparison between groups ("how does A compare to B"), state the same metrics for every group in one finding, using the unit the question implies (per customer, average order value, ...).
+- For "sell more", "best selling" or "biggest" questions without a named metric, report revenue (the default metric) and add units next to it.
 - Finish by calling `final_answer` once. Every number in it must come from a query result of this turn; cite the supporting query IDs in each finding. State definitions, overrides and the exact date range in `definitions_used`; put gaps and partial periods in `limitations`.
 
 # Schema
