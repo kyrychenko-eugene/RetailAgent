@@ -200,8 +200,20 @@ def column_values(column: str, ctx: QueryContext, *, search: str | None = None,
     # The limit is a validated int, inlined so wrap_with_limit keeps it as a literal top-level LIMIT.
     sql = (f"SELECT {name} AS value, COUNT(*) AS n FROM {table} WHERE {where} "
            f"GROUP BY value ORDER BY n DESC, value LIMIT {n}")
-    return _run(sql, ctx, tool="get_column_values", extra_params=params,
-                user_requested_granularity=False)
+    outcome = _run(sql, ctx, tool="get_column_values", extra_params=params,
+                   user_requested_granularity=False)
+    if (search and search.strip() and table_name.strip().lower() == "products" and name.lower() == "brand"
+            and not ctx.scope.all_brands and isinstance(outcome, QuerySuccess) and not outcome.rows):
+        # The scoped CTE holds only this user's brands, so a brand search with no match is a brand
+        # outside the scope (or a typo). Stop with the "no access" answer instead of leaving it to the model.
+        brand = search.strip()
+        ctx.tracer.security_event("out_of_scope_brand", ReasonCode.OUT_OF_SCOPE_BRAND.value,
+                                  query_id=outcome.query_id, brands=[brand])
+        return _fail(outcome.query_id, sql, FailureKind.OUT_OF_SCOPE_BRAND,
+                     f"Brand `{brand}` is outside this user's data. Do not retry; tell the user they have no access to it.",
+                     user_message=f"You don't have access to brand {brand}, or it does not exist in your data.",
+                     terminal=True, security_event=True, reason_code=ReasonCode.OUT_OF_SCOPE_BRAND)
+    return outcome
 
 
 def _run(sql: str, ctx: QueryContext, *, tool: str, extra_params: dict[str, QueryParamValue],

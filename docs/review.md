@@ -464,3 +464,9 @@ Offline `pytest` 395 passed; `pytest -m "bq and not llm"` 107 passed; routing 60
 - S08 (delete without confirm) failed with an error in the full run and passed alone (transient).
 
 **Not re-run after this:** smoke SM-04, SM-07, SM-08, SM-11 (see the first-run failures in the previous section).
+
+### 8.11 Deterministic out-of-scope brand check (S04, S05, SM-04)
+
+`get_column_values("products.brand", search=...)` now stops the turn when a brand manager's search finds nothing: the scoped CTE holds only their brands, so the search term is outside their data (or a typo). The turn ends with "You don't have access to brand X, or it does not exist in your data." and an `out_of_scope_brand` security event. The CEO is exempt. Code: `security/guards.py` `column_values`; tests in `tests/test_guards.py` (397 offline passed).
+
+Live (free profile): SM-04 PASS; S04 brand_manager_1 PASS and brand_manager_2 PASS; S05 brand_manager_2 PASS in one run. S05 brand_manager_1 and the repeat of S05 brand_manager_2 could not be confirmed: later runs ended in `llm_timeout` (Gemini API timing out, 0 LLM calls), not in a failure of the check. Limitation: a model that never searches brands and never writes a brand literal (for example one that answers from the brand list alone) still bypasses the check, without leaking data.

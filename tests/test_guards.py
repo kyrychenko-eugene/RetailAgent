@@ -283,3 +283,15 @@ def test_bq_error_text_has_no_urls(make_ctx):
     runner = FakeRunner(dry=DryRunResult(ok=False, bytes_processed=None, error=err))
     out = run_scoped_query(SQL, make_ctx(runner))
     assert "my-proj" not in out.model_message and "Unrecognized name" in out.model_message
+
+
+def test_brand_search_without_match_is_out_of_scope_for_a_manager(make_ctx, fake_tracer):
+    out = column_values("products.brand", make_ctx(FakeRunner(rows=[])), search="Carhartt")
+    assert isinstance(out, QueryFailure) and out.kind == FailureKind.OUT_OF_SCOPE_BRAND and out.terminal
+    assert "don't have access to brand Carhartt" in out.user_message
+    assert [r["kind"] for r in _security(fake_tracer)] == ["out_of_scope_brand"]
+
+
+def test_brand_search_without_match_is_not_a_security_event_for_the_ceo(make_ctx, fake_tracer):
+    out = column_values("products.brand", make_ctx(FakeRunner(rows=[]), scope=Scope.everything()), search="Nope")
+    assert isinstance(out, QuerySuccess) and not _security(fake_tracer)

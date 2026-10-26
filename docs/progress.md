@@ -460,3 +460,6 @@ None.
 - Golden set on a fresh key: 93/111 (business 66/78, security 27/33). Offline 395, bq 107, routing 98%, smoke 8/12 (first run). Details and misses in `docs/review.md` §8.10.
 - Open: S04 and S05 reach the right answer without the deterministic "no access" path; B04, B05, B09, B11, B14, B15, B16, B21 intermittent.
 - Live LLM calls: about 480.
+
+### Stage 11 follow-up: deterministic brand check
+- `column_values` ends the turn with the "no access" message when a manager's brand search is empty (`docs/review.md` §8.11). SM-04, S04 (both managers) pass live; S05 for brand_manager_1 not confirmed because the Gemini API timed out.
