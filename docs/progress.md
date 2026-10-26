@@ -14,7 +14,7 @@ Stage log for `docs/implementation-plan.md`. Every stage updates this file (plan
 | 7 | CLI | done | 2026-10-25 | 10 |
 | 8 | Observability and eval tooling | done | 2026-10-25 | about 190 |
 | 9 | README and example run | done | 2026-10-25 | 43 |
-| 10 | Independent review | not started | | |
+| 10 | Independent review | done | 2026-10-26 | about 142 |
 | 11 | Fixes | not started | | |
 
 ---
@@ -361,3 +361,50 @@ None.
 
 ### Usage
 - Live LLM calls: 43.
+
+---
+
+## Stage 10 — Independent review
+
+### What was done
+- **`docs/review.md`**: findings with severity, evidence and suggested fixes; verdicts per mandatory requirement; red-team log; automated checks; coverage of DD §17 and of the Stage 1–9 acceptance criteria. No code was changed.
+- **Setup check** from `README.md` in a clean venv (Python 3.12): install, `import retail_agent`, `seed_executives.py --dry-run`, offline `pytest` (362 passed), `pytest -m bq` (87 passed).
+- **Automated checks:** routing eval (97 %, 0 % false refusals; same as Stage 8), smoke SM-01 and SM-02 (both pass; the two dialogues Stage 8 never re-ran).
+- **Red-team:**
+  - 18 live CLI attempts on the `free` profile: PII, other brands via `=` and `LIKE`, injection directly and through saved report text, other executives' threads and reports, deletion without `confirm`, cost;
+  - 38 deterministic probes of the validator and guards, offline plus free dry-runs, 3 executed through `run_scoped_query`.
+- **Security core reviewed line by line:** `security/validator.py`, `scoped_sql.py`, `guards.py`, `identity.py`, `input_masking.py`.
+
+### Results
+- **Verdicts:** Safety & PII **pass with fixes required**; High-Stakes Oversight, Resilience, Observability **pass**.
+- **No critical findings.** No attempt reached a PII column, another brand's rows, a base table outside the CTEs, another executive's thread or report, or a deletion without `confirm`.
+- **High:**
+  - H1: the quasi-identifier rule (R12) is bypassed by `AVG`/`SUM`/`COUNTIF` per customer ID;
+  - H2: the rule is also bypassed by passing the ID through `UNNEST([id])`.
+  - Both were executed on real data through `run_scoped_query`.
+- **Medium:**
+  - M1: demographics linked through `order_id`, item ID or `ORDER BY id` alignment;
+  - M2: identifier filters other than `=`/`IN`/`BETWEEN`;
+  - M3: HLD and LangGraph experience still placeholders.
+- **Low:** 10 findings (L1–L10), listed in `docs/review.md` §3.
+
+### Deviations and questions
+1. **Live-call cap exceeded (plan Stage 10: ≤ 40).** The plan asks for the routing eval (~38 calls) and the smoke run on top of a ≥ 15-attempt red-team, so the cap cannot hold. Only SM-01 and SM-02 were run (SM-03 to SM-07 passed in Stage 8, and their security content was red-teamed live). About 14 of the attempts were per-minute 429 retries.
+2. **`cp .env.example .env` not run**, because it would overwrite the author's `.env` (as in Stage 9).
+3. **Test reports were planted directly in the report store** (no LLM) for the injection-through-report-text test, because the classifier refused a question that carried the injected title. All planted reports were deleted afterwards. The CEO's red-team report was deleted through the CLI with `confirm`.
+4. **The red-team sessions ran against the real `data/` and `logs/`** (runtime, git-ignored), so the traces stay available for `inspect_trace.py`. The thread IDs are in `docs/review.md` §4.
+
+### Known issues
+- See `docs/review.md`. `seed_executives.py` would assign different brands today than on 2026-10-25 (L7). It was run only with `--dry-run`, so `data/` still holds the Stage 2 assignment.
+
+### Notes for Stage 11
+- Fix H1 and H2 in `security/validator.py`, with new rejected cases in `eval/security_cases.yaml`, then run the focused Opus re-check the plan requires for security-core changes. M1/M2, L1, L2, L3 and L8 are cheap. `docs/review.md` §7 has the order.
+- Use `pytest -m "bq and not llm"` to keep BigQuery checks off the Gemini quota (L4).
+
+### Usage
+- Live LLM calls: about 142 attempts, of which about 14 were per-minute 429 retries:
+  - `pytest -m bq` (includes `test_analysis_live`): about 6;
+  - red-team CLI sessions: 78;
+  - routing eval: 38;
+  - smoke SM-01: 9; SM-02: 11.
+- BigQuery: `pytest -m bq`, about 30 MB from the red-team sessions, 3 probe executions (~10 MB each), the smoke runs, and ~25 free dry-runs.
