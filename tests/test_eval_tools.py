@@ -293,3 +293,81 @@ def test_throttle_llm_waits_when_window_full():
     for _ in range(3):
         assert llm.call_llm() == "ok"
     assert len(slept) == 1 and slept[0] == pytest.approx(60.1)
+
+
+# -- coverage extensions (Stage 10 review) -----------------------------------------------------------
+
+def test_extended_eval_sets_cover_conversation_and_plain_language():
+    routing_cases = common.load_routing_set()
+    follow_ups = [c for c in routing_cases if c.get("history")]
+    assert len(follow_ups) >= 10 and all(c.get("rewrite_contains") or c["intent"] == "report_library"
+                                         for c in follow_ups)
+    assert any("overrides" in c for c in follow_ups)
+    dialogues = common.load_smoke_set()
+    assert sum(1 for d in dialogues if len([t for t in d["turns"] if "say" in t]) >= 3) >= 4
+    golden_set = common.load_golden_set()
+    business = [c for c in golden_set["cases"] if c["category"] == "business"]
+    assert len(business) >= 26
+    known = {"outcome_any", "contains_any", "not_contains", "no_llm_role", "scope_brands_named", "premise"}
+    for case in business:
+        assert {c["type"] for c in case.get("checks", [])} <= known, case["id"]
+        # A case without reference SQL must still be scored by something deterministic.
+        assert case.get("reference_sql") or case.get("checks"), case["id"]
+
+
+def test_golden_case_checks():
+    from types import SimpleNamespace
+    rows = [{"r": 27.0}, {"r": 30.0}, {"r": 28.0}]
+    spec = {"type": "premise", "column": "r", "current_row": 0, "prior_rows": 2, "spike_pp": 3,
+            "no_spike_phrases": ["no spike"]}
+    assert not golden.premise_holds(rows, spec)
+    assert golden.premise_holds([{"r": 40.0}, {"r": 30.0}, {"r": 28.0}], spec)
+
+    analysis = SimpleNamespace(outcome="answer", definitions_used=["Revenue excludes returns"], action_items=[],
+                               findings=[])
+    response = SimpleNamespace(notes=[], analysis=analysis)
+    records = [rec("llm_call", "2026-10-01T00:00:00.000Z", node="classify", role="cheap"),
+               rec("turn_summary", "2026-10-01T00:00:01.000Z", outcome="answered", intent="analysis")]
+    result = common.TurnResult(kind="analysis", text="There was no spike in Calvin Klein churn.", response=response,
+                               reports=[], records=records, events=[])
+    checks = golden.check_case([
+        {"type": "outcome_any", "values": ["answered"]}, {"type": "contains_any", "values": ["churn"]},
+        {"type": "not_contains", "values": ["email"]}, {"type": "no_llm_role", "role": "expensive"},
+        {"type": "scope_brands_named"}, spec], result, rows, scope_brands=["Calvin Klein"])
+    assert all(ok for _, ok, _ in checks), checks
+    failed = golden.check_case([spec, {"type": "outcome_any", "values": ["cannot_answer"]}, {"type": "bogus"}],
+                               result, [{"r": 40.0}, {"r": 30.0}, {"r": 28.0}], scope_brands=[])
+    assert [ok for _, ok, _ in failed] == [False, False, False]
+    assert golden.check_definitions(result) == (True, "")
+    analysis.definitions_used = []
+    assert not golden.check_definitions(result)[0]
+
+
+def test_smoke_conversation_assertions():
+    from types import SimpleNamespace
+    records = [rec("llm_call", "2026-10-01T00:00:00.000Z", node="rewrite", role="cheap"),
+               rec("tool_call", "2026-10-01T00:00:01.000Z", node="analysis", outcome="ok", sql_executed="x")]
+    result = common.TurnResult(kind="report", text="Revenue rose 12 %",
+                               response=SimpleNamespace(notes=[], analysis=SimpleNamespace(action_items=[1])),
+                               reports=[], records=records, events=[])
+    expect = {"llm_nodes_present": ["rewrite"], "response_kind_not": ["refusal"], "has_number": True,
+              "min_action_items": 1, "max_tool_calls": 1}
+    assert all(ok for _, ok, _ in smoke.check_turn(expect, result, brand_scoped=False))
+    failing = {"llm_nodes_present": ["classify"], "response_kind_not": ["report"], "min_action_items": 2,
+               "max_tool_calls": 0}
+    assert not any(ok for _, ok, _ in smoke.check_turn(failing, result, brand_scoped=False))
+
+
+def test_routing_rewrite_and_override_scoring():
+    cases = [
+        {"id": "1", "message": "and Texas?", "intent": "analysis", "history": [{"question": "q", "answer": "a"}],
+         "rewrite_contains": [["texas"], ["revenue", "spend"]]},
+        {"id": "2", "message": "why?", "intent": "analysis", "history": [{"question": "q", "answer": "a"}],
+         "rewrite_contains": ["jeans"], "overrides": {"churn_window_days": "60"}},
+    ]
+    results = [{"intent": "analysis", "rewritten": "What did customers in Texas spend?", "overrides": {}},
+               {"intent": "analysis", "rewritten": "Why?", "overrides": {"churn_window_days": "90"}}]
+    s = routing.score(cases, results)
+    assert s["rewrite_accuracy"] == (1, 2) and s["override_accuracy"] == (0, 1)
+    assert s["rewrite_failures"][0]["id"] == "2"
+    assert "follow-up rewrites keeping the context: 1/2" in routing.format_report(s, 2, "free")

@@ -14,6 +14,7 @@ do not hold result rows. The free-text `compare` of a dialogue is printed, not c
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 import time
 from collections import defaultdict
@@ -64,6 +65,19 @@ def check_turn(expect: dict, result: TurnResult, *, brand_scoped: bool) -> list[
             for role, limit in want.items():
                 n = sum(1 for r in result.llm_calls() if r.get("role") == role)
                 add(f"max_llm_calls.{role}", n <= limit, f"{n} calls, max {limit}")
+        elif key == "llm_nodes_present":
+            used = {r.get("node") for r in result.llm_calls()}
+            add(key, set(want) <= used, f"no LLM call in {sorted(set(want) - used)}")
+        elif key == "response_kind_not":
+            add(key, result.kind not in want, f"got {result.kind}")
+        elif key == "has_number":
+            add(key, bool(re.search(r"\d", text)) == bool(want), "no number in the response")
+        elif key == "min_action_items":
+            items = getattr(getattr(result.response, "analysis", None), "action_items", None) or []
+            add(key, len(items) >= want, f"{len(items)} action items, want at least {want}")
+        elif key == "max_tool_calls":
+            n = sum(1 for r in records if r.get("event") == "tool_call")
+            add(key, n <= want, f"{n} tool calls, max {want}")
         elif key == "llm_nodes_absent":
             used = {r.get("node") for r in result.llm_calls()}
             add(key, not used & set(want), f"LLM calls in {sorted(used & set(want))}")

@@ -273,3 +273,64 @@ Only SM-01 and SM-02 were run. They are the two dialogues Stage 8 never re-ran a
 - **Accept as known limitations:** L5, L9, L10, and the DD §8.4 singleton-group gap. Record them in the README.
 - **Not code:** M3 (HLD and the experience statement).
 - **Quota hint:** run `pytest -m "bq and not llm"` to keep BigQuery checks off the Gemini quota (L4).
+
+---
+
+## 8. Coverage of the agent's core purpose (follow-up review)
+
+The core purpose: answer varied questions from **non-technical executives** and **hold a conversation** about the answers. The first pass checked that the security and oversight layers work. This pass checks whether the evals actually test the core purpose. They did not, fully, so they were extended before any further live runs. Only eval files, eval scripts and their tests changed; agent code did not.
+
+### 8.1 Gaps found in the eval sets (before)
+
+| Area | Before | Gap |
+|---|---|---|
+| Conversation (follow-ups) | SM-01 (one 2-turn follow-up); routing cases are pre-rewritten, so **the rewrite step was never evaluated** | Pronouns, elliptical follow-ups ("and the month before?", "now do Texas", "why?"), interpretation ("is that bad?"), formatting ("as a table"), a report built from the conversation, answers to a clarification |
+| Non-technical phrasing | Golden questions are analyst-phrased; routing has a few blunt ones | Vague openers, colloquial wording ("money we made", "sent back"), typos and abbreviations |
+| Glossary metrics | Revenue, AOV, churn, RFM, delivery, demographics | Gross profit / margin, return rate, acquisition channel, repeat purchase rate, department split |
+| Client requirements | — | **Definition override** ("use a 60-day churn window", clarifications §3) not tested end to end; **"definitions always stated"** not checked deterministically |
+| Honesty | B06 "no spike" only checked by the optional LLM judge | Deterministic premise check; unanswerable attribute; row-limit honesty in a dialogue |
+| Answer completeness | Key numbers only | Partial-month marking (B11), Q1 range (B07) |
+| Runner bugs | B08 (schema question, no reference SQL) crashed `run_golden.py` with `TypeError` | — |
+
+### 8.2 What was added
+
+- **`eval/routing_set.yaml`**: 38 → 58 cases.
+  - R39–R46: non-technical phrasing.
+  - R47–R58: follow-ups with `history`. They go through the graph's rewrite prompt and are checked with `rewrite_contains`, so that the rewrite keeps the context. R52 also checks `overrides`.
+  - `scripts/run_routing_eval.py` reports "follow-up rewrites keeping the context" and "overrides extracted".
+- **`eval/smoke.yaml`**: 7 → 12 dialogues.
+  - SM-08: an 8-turn non-technical conversation (vague opener → best brand → why → women's side → as a table → "is that good or bad?" → report with next steps → save).
+  - SM-09: clarification and merge.
+  - SM-10: 60-day override kept across turns, then reverted to 90.
+  - SM-11: unanswerable → row-limit honesty → aggregated alternative.
+  - SM-12: California vs Texas over three turns, with correlational language.
+  - New assertions: `llm_nodes_present`, `response_kind_not`, `has_number`, `min_action_items`, `max_tool_calls`.
+- **`eval/golden_set.yaml`**: 15 → 26 business cases.
+  - B16 colloquial revenue, B17 year over year (partial-period rule), B18 gross profit, B19 returns, B20 channels, B21 repeat rate, B22 60-day override, B23 unanswerable, B24 typos, B25 department, B26 "How are we doing?".
+  - New deterministic `checks`: B06 premise (the reference decides spike / no spike), B07 Q1 range, B08 schema answer (no expensive call, no PII column names, names the manager's brands), B11 partial month.
+  - Every analysis answer is checked for stated definitions.
+  - `run_golden.py` gained `--category` and no longer crashes on B08.
+  - All new reference SQL was run live for `ceo`, `brand_manager_1` and `brand_manager_2`. The `bq` dry-run test picks the new queries up automatically: `pytest -m "bq and not llm" tests/test_security_bq.py`, 100 passed.
+- **Tests:** four new offline tests in `tests/test_eval_tools.py`, covering the new loaders' shape, golden checks, smoke assertions, and rewrite/override scoring. `pytest` passes: 366.
+
+### 8.3 Already found by the CEO golden run (15 original cases, before the extension)
+
+12/15 passed. The two key-number misses are a real gap in the core purpose, not a scoring problem:
+
+- **N1 (medium). List and series answers are cut to one or two numbers.**
+  - B01 "List the top 10 best sellers…": the agent's queries returned the 10 rows, but the answer names only the #1 product in each ranking.
+  - B11 "Show monthly revenue for the last 12 months": the query returned 13 months, but the answer states only the first and the last month.
+  - Cause: `AnalysisOutput` (DD §10.4) has findings and a summary but no slot for the result table, and nothing in the analysis prompt asks for the full list.
+  - Suggested fix: add an optional `tables: [{title, columns, rows, query_id}]` field (rows taken from a query of the turn, capped), rendered by the CLI. Or tell the prompt to list every requested item in the findings.
+- B08 failed only because of the runner crash, now fixed.
+
+### 8.4 Live runs still to do
+
+| Run | Approx. live LLM calls (free profile) |
+|---|---|
+| Routing eval, 58 cases (12 with a rewrite) | ~70 |
+| Smoke SM-08 to SM-12 | ~75 |
+| Golden business, CEO, new and re-checked cases (B06–B08, B11, B16–B26) | ~75 |
+| Golden business, both brand managers, all 26 | ~260 |
+
+About 290 live calls were already used on 2026-10-26, so the larger runs may hit the free-tier daily quota.

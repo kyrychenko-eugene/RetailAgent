@@ -19,6 +19,11 @@
 #   deleted_count: number of reports deleted (from the deletion trace event)
 #   notes_contains: substring of AssistantResponse.notes
 #   results_brands_in_scope: every products.brand value in executed results is in scope
+#   llm_nodes_present: node names that must make an llm_call (e.g. rewrite on a follow-up)
+#   response_kind_not: kinds the response must not have (e.g. refusal, error)
+#   has_number: the rendered response states at least one number
+#   min_action_items: the analysis output has at least this many action items
+#   max_tool_calls: at most this many tool calls (queries) in the turn
 # The run reports pass/fail per assertion and p50/p95 latency per intent (turn_summary).
 # Budget: ~25 LLM calls for the full file on the free profile.
 
@@ -139,3 +144,137 @@ dialogues:
           response_kind: analysis
           contains_any: ["no spike", "did not spike", "didn't spike", "not spike", "no clear spike", "lower than", "in line with", "within the range"]
         note: On 2026-10-25 the CEO's September churn (27.9 %) was the lowest of the last 6 months (facts §6).
+
+  # ---------------------------------------------------------------- conversation (Stage 10 review)
+  - id: SM-08
+    title: A non-technical executive's conversation, from a vague opener to a report
+    persona: brand_manager_2
+    turns:
+      - say: how are we doing this year?
+        expect:
+          intent: analysis
+          also_accept: [clarify]
+          response_kind_any: [analysis, clarification]
+          response_kind_not: [refusal, error]
+      - say: which of my brands is doing best?
+        expect:
+          intent: analysis
+          response_kind: analysis
+          llm_nodes_present: [rewrite]
+          has_number: true
+          results_brands_in_scope: true
+      - say: why is that one ahead of the others?
+        expect:
+          intent: analysis
+          response_kind: analysis
+          llm_nodes_present: [rewrite]
+          has_number: true
+      - say: and what about just the women's side?
+        expect:
+          intent: analysis
+          response_kind: analysis
+          contains_any: ["women"]
+      - say: can you put that in a table?
+        expect:
+          intent: analysis
+          response_kind_any: [analysis]
+          contains_any: ["women"]
+        note: Formatting follow-up; the context (women's department) must survive the rewrite.
+      - say: is that good or bad?
+        expect:
+          response_kind_any: [analysis, clarification]
+          response_kind_not: [refusal, error, unanswerable]
+        note: Interpretation follow-up; it must not be refused.
+      - say: write me a short report on all this with what we should do next quarter
+        expect:
+          intent: report_generation
+          response_kind: report
+          min_action_items: 1
+          results_brands_in_scope: true
+      - say: save it
+        expect: {intent: report_library, response_kind: saved, no_llm_role: expensive}
+
+  - id: SM-09
+    title: Clarification, then the answer merged into the request
+    persona: brand_manager_1
+    turns:
+      - say: Do a report on {own_brand}
+        expect:
+          intent: clarify
+          also_accept: [report_generation]
+          response_kind_any: [clarification, report]
+          no_llm_role: expensive
+        note: '"Report on X" has two readings (DD §4.2); a direct report is accepted too.'
+      - say: a new one please
+        expect:
+          intent: report_generation
+          also_accept: [analysis]
+          response_kind_any: [report, analysis]
+          llm_nodes_present: [rewrite]
+          has_number: true
+
+  - id: SM-10
+    title: A definition override stays for the conversation and is stated
+    persona: ceo
+    turns:
+      - say: Let's use a 60-day churn window. What was our churn rate last month?
+        expect:
+          intent: analysis
+          response_kind: analysis
+          contains_any: ["60-day", "60 day", "60 days"]
+      - say: And the month before?
+        expect:
+          intent: analysis
+          response_kind: analysis
+          llm_nodes_present: [rewrite]
+          contains_any: ["60-day", "60 day", "60 days"]
+      - say: go back to the normal definition and compare the two months
+        expect:
+          intent: analysis
+          response_kind: analysis
+          contains_any: ["90-day", "90 day", "90 days"]
+
+  - id: SM-11
+    title: Honest limits, then a usable alternative
+    persona: brand_manager_2
+    turns:
+      - say: What's the average weight of the products we sell?
+        expect:
+          intent: unanswerable
+          also_accept: [analysis]
+          response_kind_any: [unanswerable, analysis]
+          not_contains: [" kg", " lbs", "pounds", "grams"]
+          no_llm_role: expensive
+      - say: Give me a list of every single item we sold last year, one row per item.
+        expect:
+          intent: analysis
+          response_kind_any: [analysis, clarification]
+          contains_any: ["200", "limit", "aggregate", "too many", "summar", "rows"]
+        note: More rows than the limit; the user asked for the granularity, so an honest message (DD §8.3).
+      - say: ok, then summarise it by month
+        expect:
+          intent: analysis
+          response_kind: analysis
+          llm_nodes_present: [rewrite]
+          has_number: true
+
+  - id: SM-12
+    title: Two states compared over a conversation (client question 4)
+    persona: ceo
+    turns:
+      - say: How much do customers in California spend on average?
+        expect: {intent: analysis, response_kind: analysis, has_number: true}
+      - say: and in Texas?
+        expect:
+          intent: analysis
+          response_kind: analysis
+          llm_nodes_present: [rewrite]
+          contains_any: ["texas"]
+          has_number: true
+      - say: why is there a difference?
+        expect:
+          intent: analysis
+          response_kind: analysis
+          contains_any: ["california", "texas"]
+          not_contains: ["caused by"]
+        note: Correlational language only (DD §10.3).

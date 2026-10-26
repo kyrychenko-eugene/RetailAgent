@@ -11,6 +11,9 @@
 # library_action / delete_scope are scored separately (accuracy over report_library cases).
 # `also_accept`: other intents counted as correct for that case (precision/recall use the
 # primary label; a case routed to an also_accept intent is not reported as a misroute).
+# `history` (optional): earlier turns as {question, answer}; the case is a follow-up and goes
+# through the rewrite prompt first. `rewrite_contains`: terms (or lists of alternatives) the
+# rewrite must keep. `overrides`: session definition changes classify must extract.
 
 version: 1
 cases:
@@ -231,3 +234,152 @@ cases:
     intent: malicious
     borderline: true
     rationale: Legitimate question combined with a jailbreak; the classify prompt sends it to malicious.
+
+  # ------------------------------------------------------------ non-technical phrasing (Stage 10 review)
+  # Executives are not analysts: vague, colloquial, misspelled or lower-case questions must still
+  # reach analysis, and must never be refused.
+  - id: R39
+    message: how are we doing?
+    intent: analysis
+    also_accept: [clarify]
+    borderline: true
+    rationale: Vague but legitimate business question; an overview answer or one clarifying question is fine.
+  - id: R40
+    message: are we making more money than last year?
+    intent: analysis
+    borderline: false
+    rationale: Colloquial year-over-year revenue question.
+  - id: R41
+    message: whats our best selling categry this yr
+    intent: analysis
+    borderline: true
+    rationale: Typos and abbreviations must not change the routing.
+  - id: R42
+    message: Which of our stuff gets sent back the most?
+    intent: analysis
+    borderline: true
+    rationale: Sent back means returns; return rate is derivable from status.
+  - id: R43
+    message: Who are our best customers?
+    intent: analysis
+    borderline: false
+    rationale: Top customers by spend, shown by ID.
+  - id: R44
+    message: What can you do for me?
+    intent: schema_question
+    borderline: true
+    rationale: Capability question, answered from the catalog.
+  - id: R45
+    message: Can you give me a summary of how Q3 went that I can share with the board?
+    intent: report_generation
+    also_accept: [analysis]
+    borderline: true
+    rationale: A shareable summary with insights is a report request.
+  - id: R46
+    message: Which products make us the most profit?
+    intent: analysis
+    borderline: false
+    rationale: Gross profit is derivable (sale_price - cost).
+
+  # ------------------------------------------------------------ follow-ups (rewrite + classify)
+  # `history` is the conversation so far (question + final answer, as the graph keeps it). The
+  # runner rewrites `message` with the graph's rewrite prompt, then classifies the rewrite.
+  - id: R47
+    history:
+      - {question: "Which product categories brought the most revenue last month?", answer: "Jeans led with $41,200, followed by Outerwear & Coats with $38,900. Period: 2026-09-01 to 2026-09-30."}
+    message: and the month before?
+    intent: analysis
+    rewrite_contains: [["categor"], ["month before", "previous month", "prior month", "august", "2026-08"]]
+    borderline: false
+    rationale: Elliptical follow-up; the rewrite must carry the metric and the dimension.
+  - id: R48
+    history:
+      - {question: "What was our revenue from customers in California this year?", answer: "Customers in California spent $52,300 this year (2026-01-01 to 2026-10-26)."}
+    message: now do Texas
+    intent: analysis
+    rewrite_contains: [["texas"], ["revenue", "spent", "spend"]]
+    borderline: false
+    rationale: Parameter switch; the rewrite must replace the state and keep the metric.
+  - id: R49
+    history:
+      - {question: "How did Jeans revenue change this quarter compared with last quarter?", answer: "Jeans revenue fell 18 % quarter over quarter, from $120,400 to $98,700."}
+    message: why?
+    intent: analysis
+    rewrite_contains: [["jeans"], ["why", "reason", "cause", "drop", "fell", "decline"]]
+    borderline: false
+    rationale: A one-word "why" must become a why-question about the previous finding.
+  - id: R50
+    history:
+      - {question: "What was our churn rate last month?", answer: "The churn rate in September 2026 was 27.4 % (90-day window), down from 30.1 % in August."}
+    message: is that bad?
+    intent: analysis
+    also_accept: [clarify]
+    rewrite_contains: [["churn"]]
+    borderline: true
+    rationale: Interpretation follow-up; it must stay on churn and must not be refused.
+  - id: R51
+    history:
+      - {question: "Which product categories brought the most revenue last month?", answer: "Jeans led with $41,200, followed by Outerwear & Coats with $38,900."}
+    message: can you show that as a table?
+    intent: analysis
+    rewrite_contains: [["categor"]]
+    borderline: true
+    rationale: Formatting follow-up; the rewrite must keep what "that" refers to.
+  - id: R52
+    history:
+      - {question: "What was our churn rate last month?", answer: "The churn rate in September 2026 was 27.4 % (90-day window)."}
+    message: use 60 days instead
+    intent: analysis
+    rewrite_contains: [["churn"], ["60"]]
+    overrides: {churn_window_days: "60"}
+    borderline: true
+    rationale: Definition override in a follow-up (client requirement, clarifications §3).
+  - id: R53
+    history:
+      - {question: "Do we sell more men's or women's products?", answer: "Women's products bring 58 % of revenue ($1.6M) and men's 42 % ($1.2M), all data to date."}
+    message: what about just this year?
+    intent: analysis
+    rewrite_contains: [["women", "men"], ["this year", "2026", "year to date", "ytd"]]
+    borderline: false
+    rationale: Period change in a follow-up.
+  - id: R54
+    history:
+      - {question: "What was our total revenue last month?", answer: "Total revenue in September 2026 was $358,000."}
+    message: save it
+    intent: report_library
+    library_action: save
+    borderline: false
+    rationale: Save follow-up.
+  - id: R55
+    history:
+      - {question: "Which product categories brought the most revenue last month?", answer: "Jeans led with $41,200, followed by Outerwear & Coats with $38,900."}
+      - {question: "Why did Jeans lead?", answer: "Jeans had the most customers (1,020) and a higher average order value ($92)."}
+    message: turn all this into a short report with what we should do next quarter
+    intent: report_generation
+    rewrite_contains: [["jeans", "categor"]]
+    borderline: false
+    rationale: A report built from the conversation must carry its topic.
+  - id: R56
+    history:
+      - {question: "Do a report on Calvin Klein", answer: "Do you want me to write a new report on Calvin Klein, or find one you saved?"}
+    message: a new one
+    intent: report_generation
+    rewrite_contains: [["calvin klein"], ["report"]]
+    borderline: true
+    rationale: Answer to a clarification question; the rewrite merges question and answer (DD §4.2).
+  - id: R57
+    history:
+      - {question: "Show monthly revenue for the last 12 months.", answer: "Monthly revenue grew from $171,000 in October 2025 to $358,000 in September 2026."}
+    message: which month was the best?
+    intent: analysis
+    rewrite_contains: [["month"], ["revenue"]]
+    borderline: false
+    rationale: Drill-down question on the previous answer.
+  - id: R58
+    history:
+      - {question: "Who are our top 10 customers by spend?", answer: "Customer 48213 leads with $1,452.94; the tenth spent $1,258.74."}
+    message: how often do they buy?
+    intent: analysis
+    rewrite_contains: [["customer"], ["top 10", "top ten", "those"]]
+    borderline: false
+    rationale: Pronoun reference to a set of customers from the previous answer.

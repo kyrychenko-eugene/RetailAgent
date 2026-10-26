@@ -1,6 +1,6 @@
 """Golden set runner (DD §16.2, §16.3): business accuracy against live reference SQL, security from traces.
 
-    python scripts/run_golden.py [--case ID] [--persona ID] [--limit N] [--judge]
+    python scripts/run_golden.py [--case ID] [--persona ID] [--category C] [--limit N] [--judge]
 
 For every case and persona: resolve the placeholders, ask the agent, run the reference SQL live
 through the scoped CTEs of that persona and compare the key numbers, then (with --judge) ask an
@@ -77,6 +77,54 @@ def check_key_numbers(specs: Sequence[dict], rows: Sequence[dict], answer_text: 
 def answer_text(result: TurnResult) -> str:
     """The text of the answer plus the stated findings (numbers are looked up here)."""
     return result.text
+
+
+def premise_holds(rows: Sequence[dict], spec: dict) -> bool:
+    """True when the reference shows a spike: the current row is more than `spike_pp` above the
+    maximum of the `prior_rows` rows after it (glossary §5 premise check, case B06)."""
+    col, cur = spec["column"], int(spec.get("current_row", 0))
+    prior = [float(r[col]) for r in rows[cur + 1: cur + 1 + int(spec["prior_rows"])] if r.get(col) is not None]
+    return bool(prior) and float(rows[cur][col]) > max(prior) + float(spec["spike_pp"])
+
+
+def check_case(checks: Sequence[dict], result: TurnResult, rows: Sequence[dict], *,
+               scope_brands: Sequence[str]) -> list[tuple[str, bool, str]]:
+    """Deterministic checks of a business case (`checks:` in golden_set.yaml)."""
+    text = result.text.lower()
+    out: list[tuple[str, bool, str]] = []
+    for spec in checks:
+        kind = spec["type"]
+        if kind == "outcome_any":
+            got = result.summary.get("outcome")
+            out.append((f"outcome in {spec['values']}", got in spec["values"], f"got {got}"))
+        elif kind == "contains_any":
+            out.append((f"mentions one of {spec['values']}", any(v.lower() in text for v in spec["values"]), ""))
+        elif kind == "not_contains":
+            hit = [v for v in spec["values"] if v.lower() in text]
+            out.append((f"does not mention {spec['values']}", not hit, f"found {hit}"))
+        elif kind == "no_llm_role":
+            n = sum(1 for r in result.llm_calls() if r.get("role") == spec["role"])
+            out.append((f"no {spec['role']} LLM call", n == 0, f"{n} calls"))
+        elif kind == "scope_brands_named":
+            if scope_brands:
+                out.append(("names the executive's brands", any(b.lower() in text for b in scope_brands),
+                            f"none of {list(scope_brands)}"))
+        elif kind == "premise":
+            spike = premise_holds(rows, spec)
+            said_no = any(p.lower() in text for p in spec["no_spike_phrases"])
+            name = "says there was no spike" if not spike else "does not deny the spike"
+            out.append((name, said_no != spike, f"reference spike={spike}, answer says no spike={said_no}"))
+        else:
+            out.append((f"unknown check {kind}", False, ""))
+    return out
+
+
+def check_definitions(result: TurnResult) -> tuple[bool, str]:
+    """The client requires every answer to state the definitions it used (clarifications §3)."""
+    out = getattr(result.response, "analysis", None)
+    if out is None or out.outcome != "answer":
+        return True, ""
+    return (True, "") if out.definitions_used else (False, "definitions_used is empty")
 
 
 def check_action_items(result: TurnResult) -> tuple[bool, str]:
@@ -217,9 +265,16 @@ def run_case(app, data: dict, case: dict, persona: str, catalog, *, use_judge: b
                 other_owner_report_ids=other_ids, own_scope_brands=set(executive.scope.brands),
                 other_brands=other_brands)
             return out
-        reference = substitute(case["reference_sql"], values, escape=True)
-        rows = run_scoped(app.deps.bq, settings, catalog, executive.scope, reference, label=f"golden_{case['id']}")
+        rows: list[dict] = []
+        if case.get("reference_sql"):    # a schema question has no reference query
+            reference = substitute(case["reference_sql"], values, escape=True)
+            rows = run_scoped(app.deps.bq, settings, catalog, executive.scope, reference,
+                              label=f"golden_{case['id']}")
         out["key_numbers"] = check_key_numbers(case.get("key_numbers", []), rows, answer_text(result))
+        out["checks"] += check_case(case.get("checks", []), result, rows, scope_brands=executive.scope.brands)
+        if result.kind in ("analysis", "report"):
+            ok, detail = check_definitions(result)
+            out["checks"].append(("definitions stated", ok, detail))
         if result.kind in ("analysis", "report") and any(
                 m for m in case.get("must_state", []) if "deterministic" in str(m)):
             ok, detail = check_action_items(result)
@@ -290,6 +345,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--case", help="run only this case id, e.g. B04")
     parser.add_argument("--persona", choices=PERSONAS, help="run only this persona")
+    parser.add_argument("--category", choices=["business", "security"], help="run only this category")
     parser.add_argument("--limit", type=int, help="run at most N (case, persona) pairs")
     parser.add_argument("--judge", action="store_true", help="also run the LLM judge on business cases")
     parser.add_argument("--file", type=Path, default=EVAL_DIR / "golden_set.yaml")
@@ -297,7 +353,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         data = load_golden_set(args.file)
-        cases = [c for c in data["cases"] if args.case in (None, c["id"])]
+        cases = [c for c in data["cases"] if args.case in (None, c["id"])
+                 and args.category in (None, c["category"])]
         pairs = [(c, p) for c in cases for p in personas_for(c, data, args.persona)]
         if args.limit:
             pairs = pairs[:args.limit]
